@@ -104,8 +104,7 @@ local POPUP_NAMES = { "RebirthPrompt", "OfflineRewardPrompt", "BoothPurchaseProm
 task.spawn(function()
     while task.wait(0.5) do
         local pgui = client:FindFirstChild("PlayerGui")
-        if not pgui then continue end
-
+        if pgui then
         if _G.DisablePopups then
             for _, promptName in ipairs(POPUP_NAMES) do
                 local promptGui = pgui:FindFirstChild(promptName)
@@ -132,6 +131,7 @@ task.spawn(function()
                 end
             end
         end
+        end -- end if pgui
     end
 end)
 
@@ -146,12 +146,13 @@ local Setup = Library:Setup({
 })
 
 print("[SSC Farm] Library loaded.")
+print("[SSC Farm] STEP 1: helpers")
 
 
 -- [ FORWARD DECLARATIONS ]
 -- declared as upvalues here so functions defined later can be called by
--- earlier code (e.g. checkWeatherAlerts → dispatchWebhook)
-dispatchWebhook = nil
+-- earlier code (e.g. checkWeatherAlerts -> dispatchWebhook)
+local dispatchWebhook
 
 
 -- [ HELPERS ]
@@ -201,7 +202,9 @@ end
 
 
 -- [ NETWORKER / REMOTES (with watchdog) ]
+print("[SSC Farm] STEP 2: requiring Networker")
 local Networker = require(RS.Source.Shared.Networker)
+print("[SSC Farm] STEP 2: Networker OK")
 
 local function getRemote(name)
     local ok, result = pcall(function()
@@ -254,10 +257,12 @@ end)
 
 
 -- [ CONFIGS ]
+print("[SSC Farm] STEP 3: requiring Configs")
 local PackConfig    = require(RS.Source.Shared.Configs.PackConfig)
 local CardConfig    = require(RS.Source.Shared.Configs.CardConfig)
 local RebirthConfig = require(RS.Source.Shared.Configs.RebirthConfig)
 local PlayerStore   = require(RS.Source.Shared.State.PlayerStore)
+print("[SSC Farm] STEP 3: Configs OK")
 
 local WeatherStore = nil
 pcall(function()
@@ -455,6 +460,7 @@ local function getRarityLevel(rarity)
 end
 
 
+print("[SSC Farm] STEP 4: building card list")
 -- [ CARD ID LIST (for whitelist/hunt UI) ]
 -- Cap the list to avoid Versus library lag with huge dropdowns.
 -- Only include cards at Mythic+ by default; rest available via search later.
@@ -609,6 +615,7 @@ getgenv().WebhookURL    = ""
 getgenv().WebhookPingID = ""
 
 dispatchWebhook = function(payload)
+    payload = payload or {}
     local url = getgenv().WebhookURL or ""
     if url == "" or not req then return end
     local pingId = getgenv().WebhookPingID or ""
@@ -626,6 +633,7 @@ dispatchWebhook = function(payload)
 end
 
 
+print("[SSC Farm] STEP 5: registering listeners")
 -- [ RARE ROLL WEBHOOK + STATS LISTENER + HUNT ]
 local huntFound = false
 if remotes.OpenPack then
@@ -822,13 +830,16 @@ local function rarityCounts()
 end
 
 
+print("[SSC Farm] STEP 6: starting loops")
 -- [ FAST LOOP: OPEN & BUY PACKS ]
 local openPackIndex = 1
 local buyPackIndex  = 1
 
 task.spawn(function()
     while task.wait() do
-        if Library.Flags["MasterKillSwitch"] then task.wait(0.5) continue end
+        if Library.Flags["MasterKillSwitch"] then
+            task.wait(0.5)
+        else
 
         -- Weather gating: "only open during X weather"
         local weatherGateOK = true
@@ -923,6 +934,7 @@ task.spawn(function()
 
             if buyDelay > 0 then hwait(buyDelay, buyDelay + 0.2) end
         end
+        end -- end else (MasterKillSwitch)
     end
 end)
 
@@ -937,7 +949,7 @@ local timers = {
 
 task.spawn(function()
     while task.wait(0.2) do
-        if Library.Flags["MasterKillSwitch"] then continue end
+        if not Library.Flags["MasterKillSwitch"] then
         local now = os.clock()
 
         _G.DisablePopups = Library.Flags["DisablePopups"]
@@ -1213,47 +1225,26 @@ task.spawn(function()
                 end
             end)
         end
+        end -- end if not MasterKillSwitch
     end
 end)
 
 
 -- [ UI: SECTIONS ]
+print("[SSC Farm] Building UI sections...")
+
+-- Simple pcall wrapper. If CreateSection fails, return a stub so calls don't crash.
 local function safeSection(name)
     local ok, sec = pcall(function() return Setup:CreateSection(name) end)
-    if not ok or not sec then
-        warn("[SSC Farm] Failed to create section: " .. tostring(name) .. " — " .. tostring(sec))
-        -- return a stub so subsequent createX calls don't crash
-        local stub = {}
-        local function noop() return stub end
-        setmetatable(stub, { __index = function() return noop end })
-        return stub
+    if ok and sec then
+        print("[SSC Farm]   + section: " .. name)
+        return sec
     end
-    -- wrap every createX method so a single bad element doesn't kill the tab
-    local original = {}
-    for _, method in ipairs({
-        "createLabel","createButton","createToggle","createSlider",
-        "createInputBox","createDropdown",
-    }) do
-        local fn = sec[method]
-        if type(fn) == "function" then
-            original[method] = fn
-            sec[method] = function(self, args)
-                local okCall, result = pcall(fn, self, args)
-                if not okCall then
-                    warn(string.format(
-                        "[SSC Farm] %s failed for '%s' in section '%s' — %s",
-                        method, tostring(args and args.Name), tostring(name), tostring(result)
-                    ))
-                    -- return a stub object with :Set so later code (label_x:Set) doesn't crash
-                    local stub = {}
-                    setmetatable(stub, { __index = function() return function() end end })
-                    return stub
-                end
-                return result
-            end
-        end
-    end
-    return sec
+    warn("[SSC Farm] Section FAILED: " .. tostring(name) .. " -> " .. tostring(sec))
+    local stub = {}
+    local function noop() return stub end
+    setmetatable(stub, { __index = function() return noop end })
+    return stub
 end
 
 local TabMaster   = safeSection("Master")
