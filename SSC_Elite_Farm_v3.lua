@@ -22,7 +22,6 @@ local PLACE_ID = game.PlaceId
 
 
 -- [ CONSTANTS ]
-local CODES_URL        = "https://raw.githubusercontent.com/Aditya-lua/Scripts_2/refs/heads/main/SSC_CODES.txt"
 local LIBRARY_URL      = "https://versusairlines.top/scripts/NewLibrary.lua"
 local ROBLOX_THUMBS    = "https://thumbnails.roblox.com/v1/assets?assetIds=%s&returnPolicy=PlaceHolder&size=420x420&format=Png&isCircular=false"
 local ROBLOX_AVATAR    = "https://www.roblox.com/headshot-thumbnail/image?userId=%d&width=150&height=150&format=png"
@@ -33,7 +32,6 @@ local STATS_DELAY_DEFAULT   = 15
 local MIN_GEMS_DEFAULT      = 100
 local SELL_DEFAULT          = "Silver"
 local RARITY_THRESH_DEFAULT = "Mythic"
-local CODE_WAIT             = 1.5
 local REBIRTH_CD_NORMAL     = 15
 local REBIRTH_CD_FORCE      = 30
 local LOG_MAX               = 200
@@ -253,11 +251,10 @@ local WeatherStore  = nil
 pcall(function() WeatherStore = require(RS.Source.Shared.State.WeatherStore) end)
 
 -- Optional configs (exist per dump)
-local TournamentConfig, TrophyConfig, PotionConfig, CodeConfig = nil, nil, nil, nil
+local TournamentConfig, TrophyConfig, PotionConfig = nil, nil, nil
 pcall(function() TournamentConfig = require(RS.Source.Shared.Configs.TournamentConfig) end)
 pcall(function() TrophyConfig     = require(RS.Source.Shared.Configs.TrophyConfig) end)
 pcall(function() PotionConfig     = require(RS.Source.Shared.Configs.PotionConfig) end)
-pcall(function() CodeConfig       = require(RS.Source.Shared.Configs.CodeConfig) end)
 
 -- Build potion list from config
 local potionList = {}
@@ -276,7 +273,6 @@ end
 local stats = {
     opened=0, bought=0, sold=0, rebirths=0, gemBuys=0, collects=0,
     locked=0, wishes=0, trophiesCrafted=0, hopCount=0,
-    codesRedeemed=false,
     sessionStart=os.time(),
     cashStart=nil, gemsStart=nil, rebirthStart=nil,
     rarityRolls={}, lastRebirthTs=os.time(),
@@ -603,63 +599,71 @@ if remotes.OpenPack then
 end
 
 
--- [ GAME NOTIFICATION LISTENER (real Notification remote!) ]
--- Webhooks any in-game toast (weather, events, admin messages) if WebhookGameNotifs is on.
-if remotes.Notification and remotes.Notification.OnClientEvent then
-    remotes.Notification.OnClientEvent:Connect(function(data)
-        if type(data) ~= "table" then return end
-        local msg = tostring(data.Msg or data.msg or "")
-        if msg == "" then return end
-        if Library.Flags["WebhookGameNotifs"] then
-            local success = (data.Success ~= false)
-            dispatchWebhook({ embeds = {{
-                title = success and "🟢 Game Notification" or "🔴 Game Notification",
-                description = msg,
-                color = success and 3066993 or 15158332,
-                footer = { text = "Spin a Soccer Card • " .. os.date("%H:%M:%S") },
-            }}})
-        end
-        logEvent("GameNotif", msg)
+-- [ SAFE EVENT-LISTENER HELPER ]
+-- Only RemoteEvents have OnClientEvent. Trying to access it on a RemoteFunction
+-- THROWS (not nil) — so we must check ClassName before connecting.
+local function safeConnectClientEvent(remote, handler, tag)
+    if not remote then return end
+    local ok, cls = pcall(function() return remote.ClassName end)
+    if not ok or cls ~= "RemoteEvent" then
+        logEvent("Listener", (tag or "remote") .. ": not a RemoteEvent (got " .. tostring(cls) .. "), skipped.")
+        return
+    end
+    pcall(function()
+        remote.OnClientEvent:Connect(function(...) pcall(handler, ...) end)
     end)
 end
 
 
--- [ TOURNAMENT STATE LISTENER (real remote!) ]
-do
-    local tsRemote = remotes.TournamentState or remotes.Tournament
-    if tsRemote and tsRemote.OnClientEvent then
-        tsRemote.OnClientEvent:Connect(function(data)
-            if type(data) ~= "table" then return end
-            if data.placement then tournamentState.placement = data.placement end
-            if data.active ~= nil then
-                if data.active and not tournamentState.inTournament then
-                    tournamentState.inTournament = true
-                    tournamentState.startedAt    = os.time()
-                    logEvent("Tournament", "Joined")
-                elseif not data.active and tournamentState.inTournament then
-                    tournamentState.inTournament = false
-                    if (tournamentState.placement or 999) <= 3 then
-                        tournamentState.wins = tournamentState.wins + 1
-                    end
-                    logEvent("Tournament", "Ended — placement " .. tostring(tournamentState.placement))
-                    if Library.Flags["WebhookTournament"] then
-                        dispatchWebhook({ embeds = {{
-                            title = "🏆 Tournament Finished",
-                            description = "Placement: **" .. tostring(tournamentState.placement or "?") .. "**",
-                            color = (tournamentState.placement or 999) <= 3 and 16766720 or 7506394,
-                            footer = { text = "Spin a Soccer Card" },
-                        }}})
-                    end
-                end
-            end
-        end)
+-- [ GAME NOTIFICATION LISTENER ]
+safeConnectClientEvent(remotes.Notification, function(data)
+    if type(data) ~= "table" then return end
+    local msg = tostring(data.Msg or data.msg or "")
+    if msg == "" then return end
+    if Library.Flags["WebhookGameNotifs"] then
+        local success = (data.Success ~= false)
+        dispatchWebhook({ embeds = {{
+            title = success and "🟢 Game Notification" or "🔴 Game Notification",
+            description = msg,
+            color = success and 3066993 or 15158332,
+            footer = { text = "Spin a Soccer Card • " .. os.date("%H:%M:%S") },
+        }}})
     end
+    logEvent("GameNotif", msg)
+end, "Notification")
 
-    local ttRemote = remotes.TournamentTick
-    if ttRemote and ttRemote.OnClientEvent then
-        ttRemote.OnClientEvent:Connect(function() tournamentState.lastTick = os.clock() end)
+
+-- [ TOURNAMENT STATE LISTENER ]
+-- TournamentState may be a RemoteFunction in some versions of the game — guard for that.
+safeConnectClientEvent(remotes.TournamentState or remotes.Tournament, function(data)
+    if type(data) ~= "table" then return end
+    if data.placement then tournamentState.placement = data.placement end
+    if data.active ~= nil then
+        if data.active and not tournamentState.inTournament then
+            tournamentState.inTournament = true
+            tournamentState.startedAt    = os.time()
+            logEvent("Tournament", "Joined")
+        elseif not data.active and tournamentState.inTournament then
+            tournamentState.inTournament = false
+            if (tournamentState.placement or 999) <= 3 then
+                tournamentState.wins = tournamentState.wins + 1
+            end
+            logEvent("Tournament", "Ended — placement " .. tostring(tournamentState.placement))
+            if Library.Flags["WebhookTournament"] then
+                dispatchWebhook({ embeds = {{
+                    title = "🏆 Tournament Finished",
+                    description = "Placement: **" .. tostring(tournamentState.placement or "?") .. "**",
+                    color = (tournamentState.placement or 999) <= 3 and 16766720 or 7506394,
+                    footer = { text = "Spin a Soccer Card" },
+                }}})
+            end
+        end
     end
-end
+end, "TournamentState")
+
+safeConnectClientEvent(remotes.TournamentTick, function()
+    tournamentState.lastTick = os.clock()
+end, "TournamentTick")
 
 
 -- [ SERVER HOP ]
@@ -762,32 +766,23 @@ task.spawn(function()
 end)
 
 
--- [ NATIVE PACK SETTINGS (server-side toggles via PackSettings remote) ]
--- The game has built-in toggles for auto-open & hide-animation.
--- We just mirror our UI flags to the server.
-local lastPackSettings = { hideAnim = nil, autoOpen = nil }
+-- [ NATIVE PACK SETTINGS (server-side hideAnimation toggle) ]
+-- The script's own AutoOpenPacks loop in the Packs tab is faster than
+-- the game's native PackAutoOpen — so we only mirror the hideAnimation flag.
+local lastPackHide = nil
 
 local function syncPackSettings()
     if not remotes.PackSettings then return end
     local hide = Library.Flags["PackHideAnim"] == true
-    local auto = Library.Flags["PackAutoOpen"] == true
-    if hide ~= lastPackSettings.hideAnim then
-        lastPackSettings.hideAnim = hide
+    if hide ~= lastPackHide then
+        lastPackHide = hide
         pcall(function() remotes.PackSettings:FireServer("packHideAnimation", hide) end)
         logEvent("PackSettings", "hideAnimation = " .. tostring(hide))
     end
-    if auto ~= lastPackSettings.autoOpen then
-        lastPackSettings.autoOpen = auto
-        pcall(function() remotes.PackSettings:FireServer("packAutoOpen", auto) end)
-        logEvent("PackSettings", "autoOpen = " .. tostring(auto))
-    end
 end
 
--- Poll every 1s in case user toggles
 task.spawn(function()
-    while task.wait(1) do
-        pcall(syncPackSettings)
-    end
+    while task.wait(1) do pcall(syncPackSettings) end
 end)
 
 
@@ -981,41 +976,6 @@ task.spawn(function()
                 if p and p ~= "" then
                     remotes.UsePotion:FireServer(p)
                     logEvent("Potion", "Used " .. p)
-                end
-            end)
-        end
-
-        -- Redeem codes (once per session) — combines external URL + local CodeConfig wordlist
-        if Library.Flags["AutoRedeemCodes"] and not stats.codesRedeemed then
-            stats.codesRedeemed = true
-            task.spawn(function()
-                local codes, seen = {}, {}
-                -- 1. External github code list
-                local ok, res = pcall(function() return game:HttpGet(CODES_URL) end)
-                if ok and type(res) == "string" then
-                    for line in res:gmatch("[^\r\n]+") do
-                        local c = line:gsub("%s+", "")
-                        if c ~= "" and #c >= 3 and not seen[c] then
-                            table.insert(codes, c)
-                            seen[c] = true
-                        end
-                    end
-                end
-                -- 2. Local CodeConfig WordList (in-memory, always up-to-date)
-                if CodeConfig and CodeConfig.WordList then
-                    for _, w in ipairs(CodeConfig.WordList) do
-                        if not seen[w] then
-                            table.insert(codes, w)
-                            seen[w] = true
-                        end
-                    end
-                end
-                if remotes.RedeemCode and #codes > 0 then
-                    for _, code in ipairs(codes) do
-                        pcall(function() remotes.RedeemCode:FireServer(string.lower(code)) end)
-                        task.wait(CODE_WAIT)
-                    end
-                    logEvent("Codes", "Tried " .. #codes .. " codes (external + CodeConfig).")
                 end
             end)
         end
@@ -1554,14 +1514,6 @@ TabAuto:createToggle({
     Callback    = function() end,
 })
 
-TabAuto:createToggle({
-    Name        = "🎟️ Auto Redeem Codes",
-    flagName    = "AutoRedeemCodes",
-    Flag        = false,
-    Description = "Redeems external + native CodeConfig.WordList (~60 codes) once per session.",
-    Callback    = function() end,
-})
-
 TabAuto:createLabel({ Name = "💎 Gem Shop", Special = true })
 
 TabAuto:createToggle({
@@ -1736,24 +1688,20 @@ TabExtra:createButton({
 -- 🧹 CLEANUP — native pack settings + UI suppression
 -- =============================================
 
-TabClean:createLabel({ Name = "🎬 Native Pack Settings", Special = true })
-TabClean:createLabel({ Name = "These call the game's own PackSettings remote — proper, server-side, no UI hacks." })
+TabClean:createLabel({ Name = "🎬 Native Pack Animation", Special = true })
+TabClean:createLabel({ Name = "Server-side toggle — no client hacks, no blur, no UI damage." })
 
 TabClean:createToggle({
     Name        = "Hide Pack Animation (Native)",
     flagName    = "PackHideAnim",
     Flag        = false,
-    Description = "Fires PackSettings('packHideAnimation', true). Server-side, no blur.",
+    Description = "Fires PackSettings('packHideAnimation', true). The game itself skips the reveal animation.",
     Callback    = function() syncPackSettings() end,
 })
 
-TabClean:createToggle({
-    Name        = "Pack Auto-Open (Native)",
-    flagName    = "PackAutoOpen",
-    Flag        = false,
-    Description = "Fires PackSettings('packAutoOpen', true). The game itself opens packs as you obtain them.",
-    Callback    = function() syncPackSettings() end,
-})
+-- NOTE: The native PackAutoOpen toggle is intentionally NOT exposed here.
+-- It's much slower than the script's own AutoOpenPacks loop (Packs tab),
+-- because the game waits for each reveal cycle before queuing the next pack.
 
 TabClean:createLabel({ Name = "💰 Earnings Floats", Special = true })
 
@@ -1896,7 +1844,7 @@ TabStats:createButton({
     Callback = function()
         stats = {
             opened=0,bought=0,sold=0,rebirths=0,gemBuys=0,collects=0,
-            locked=0,wishes=0,trophiesCrafted=0,hopCount=0,codesRedeemed=false,
+            locked=0,wishes=0,trophiesCrafted=0,hopCount=0,
             sessionStart=os.time(),cashStart=nil,gemsStart=nil,rebirthStart=nil,
             rarityRolls={},lastRebirthTs=os.time(),
         }
