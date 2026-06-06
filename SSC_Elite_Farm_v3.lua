@@ -6,7 +6,7 @@
 -- // ============================================
 
 
--- ============ SERVICES ============
+-- [ SERVICES ]
 local Players          = game:GetService("Players")
 local RS               = game:GetService("ReplicatedStorage")
 local CoreGui          = game:GetService("CoreGui")
@@ -20,12 +20,12 @@ local UserInputService = game:GetService("UserInputService")
 local GuiService       = game:GetService("GuiService")
 
 
--- ============ CLIENT ============
+-- [ CLIENT ]
 local client           = Players.LocalPlayer
 local PLACE_ID         = game.PlaceId
 
 
--- ============ CONSTANTS ============
+-- [ CONSTANTS ]
 local CODES_URL        = "https://raw.githubusercontent.com/Aditya-lua/Scripts_2/refs/heads/main/SSC_CODES.txt"
 local LIBRARY_URL      = "https://versusairlines.top/scripts/NewLibrary.lua"
 local ROBLOX_THUMBS    = "https://thumbnails.roblox.com/v1/assets?assetIds=%s&returnPolicy=PlaceHolder&size=420x420&format=Png&isCircular=false"
@@ -54,14 +54,14 @@ local GEM_SHOP_MAP = {
 local BLOCKED_IDS = { LocalCard = true, OwnerVulnone = true }
 
 
--- ============ HTTP REQUEST ============
+-- [ HTTP REQUEST ]
 local req = (syn and syn.request)
          or (http and http.request)
          or http_request
          or request
 
 
--- ============ ANTI AFK (humanized) ============
+-- [ ANTI AFK (humanized) ]
 client.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
@@ -72,7 +72,7 @@ client.Idled:Connect(function()
 end)
 
 
--- ============ POPUP BLOCKER (NAMECALL HOOK) ============
+-- [ POPUP BLOCKER (NAMECALL HOOK) ]
 local gm = getrawmetatable(game)
 setreadonly(gm, false)
 local oldNamecall = gm.__namecall
@@ -98,7 +98,7 @@ end)
 setreadonly(gm, true)
 
 
--- ============ GUI SUPPRESSOR LOOP ============
+-- [ GUI SUPPRESSOR LOOP ]
 local POPUP_NAMES = { "RebirthPrompt", "OfflineRewardPrompt", "BoothPurchasePrompt" }
 
 task.spawn(function()
@@ -136,7 +136,7 @@ task.spawn(function()
 end)
 
 
--- ============ LIBRARY SETUP ============
+-- [ LIBRARY SETUP ]
 print("[SSC Farm] Loading Versus library...")
 local Library = loadstring(game:HttpGet(LIBRARY_URL))()
 
@@ -148,7 +148,7 @@ local Setup = Library:Setup({
 print("[SSC Farm] Library loaded.")
 
 
--- ============ HELPERS ============
+-- [ HELPERS ]
 local function notify(title, desc, style)
     pcall(function()
         Library:createDisplayMessage(title, desc, { { text = "OK" } }, style or "info")
@@ -178,7 +178,7 @@ local function hwait(a, b)
 end
 
 
--- ============ REMOTE THROTTLE ============
+-- [ REMOTE THROTTLE ]
 local remoteCallTimestamps = {}
 local function throttleAllow()
     local now = os.clock()
@@ -194,7 +194,7 @@ local function throttleAllow()
 end
 
 
--- ============ NETWORKER / REMOTES (with watchdog) ============
+-- [ NETWORKER / REMOTES (with watchdog) ]
 local Networker = require(RS.Source.Shared.Networker)
 
 local function getRemote(name)
@@ -247,7 +247,7 @@ task.spawn(function()
 end)
 
 
--- ============ CONFIGS ============
+-- [ CONFIGS ]
 local PackConfig    = require(RS.Source.Shared.Configs.PackConfig)
 local CardConfig    = require(RS.Source.Shared.Configs.CardConfig)
 local RebirthConfig = require(RS.Source.Shared.Configs.RebirthConfig)
@@ -259,7 +259,7 @@ pcall(function()
 end)
 
 
--- ============ SESSION STATS ============
+-- [ SESSION STATS ]
 local stats = {
     opened        = 0,
     bought        = 0,
@@ -281,7 +281,7 @@ local stats = {
 }
 
 
--- ============ PLAYER DATA ACCESSORS ============
+-- [ PLAYER DATA ACCESSORS ]
 local function getPlayerData()
     local ok, state = pcall(function() return PlayerStore() end)
     if not ok or not state or not state.players then return nil end
@@ -314,7 +314,7 @@ local function getRebirthLevel()
 end
 
 
--- ============ WEATHER ============
+-- [ WEATHER ]
 local function getActiveWeathersList()
     if not WeatherStore then return {} end
     local ok, state = pcall(function() return WeatherStore() end)
@@ -370,7 +370,7 @@ local function checkWeatherAlerts()
 end
 
 
--- ============ FORMATTERS ============
+-- [ FORMATTERS ]
 local function formatCash(n)
     n = tonumber(n) or 0
     if n >= 1e12 then return string.format("%.2fT", n / 1e12)
@@ -389,7 +389,7 @@ local function formatDuration(secs)
 end
 
 
--- ============ PACK LIST & PRICE HELPERS ============
+-- [ PACK LIST & PRICE HELPERS ]
 local function getPackList()
     local list = {}
     for packName, packData in pairs(PackConfig.Packs or {}) do
@@ -413,7 +413,7 @@ local function packPrice(name)
 end
 
 
--- ============ RARITY SYSTEM (dynamic + hardcoded fallback) ============
+-- [ RARITY SYSTEM (dynamic + hardcoded fallback) ]
 local rarityOrder = {
     ["Bronze"]=1, ["Silver"]=2, ["Gold"]=3, ["Legendary"]=4, ["Mythic"]=5,
     ["Azure Zenith"]=6, ["Crimson Zenith"]=7, ["Divine"]=8, ["Primordial"]=9,
@@ -449,7 +449,7 @@ local function getRarityLevel(rarity)
 end
 
 
--- ============ CARD ID LIST (for whitelist/hunt UI) ============
+-- [ CARD ID LIST (for whitelist/hunt UI) ]
 local cardIdList = {}
 local cardDisplayToId = {}
 do
@@ -463,7 +463,7 @@ do
 end
 
 
--- ============ REBIRTH CHECKS / SMART ============
+-- [ REBIRTH CHECKS / SMART ]
 local function getRebirthRequirements()
     local playerData = getPlayerData()
     if not playerData then return nil end
@@ -495,7 +495,7 @@ local function canRebirth()
 end
 
 
--- ============ EQUIP BEST CARDS ============
+-- [ EQUIP BEST CARDS ]
 local SlotController = nil
 
 local function equipBest()
@@ -555,7 +555,7 @@ local function equipBest()
 end
 
 
--- ============ WHITELIST / PROTECTED CARDS ============
+-- [ WHITELIST / PROTECTED CARDS ]
 local function isProtectedById(id)
     if BLOCKED_IDS[id] then return true end
     local flag = Library.Flags["ProtectedCards"]
@@ -577,7 +577,7 @@ local function isLastCopy(id)
 end
 
 
--- ============ WEBHOOK ============
+-- [ WEBHOOK ]
 getgenv().WebhookURL    = ""
 getgenv().WebhookPingID = ""
 
@@ -599,7 +599,7 @@ function dispatchWebhook(payload)
 end
 
 
--- ============ RARE ROLL WEBHOOK + STATS LISTENER + HUNT ============
+-- [ RARE ROLL WEBHOOK + STATS LISTENER + HUNT ]
 local huntFound = false
 if remotes.OpenPack then
     remotes.OpenPack.OnClientEvent:Connect(function(img, cData, color, uuid, chances, isNew, pName)
@@ -710,7 +710,7 @@ if remotes.OpenPack then
 end
 
 
--- ============ SERVER HOP ============
+-- [ SERVER HOP ]
 local function fetchServers()
     if not req then return nil end
     local result = nil
@@ -767,7 +767,7 @@ local function serverHop(mode)
 end
 
 
--- ============ AUTO REJOIN ============
+-- [ AUTO REJOIN ]
 GuiService.ErrorMessageChanged:Connect(function()
     if Library.Flags["AutoRejoin"] then
         task.wait(1)
@@ -783,7 +783,7 @@ client.OnTeleport:Connect(function(state)
 end)
 
 
--- ============ INVENTORY ANALYTICS HELPERS ============
+-- [ INVENTORY ANALYTICS HELPERS ]
 local function rarityCounts()
     local out = {}
     for _, card in ipairs(getInventory()) do
@@ -795,7 +795,7 @@ local function rarityCounts()
 end
 
 
--- ============ FAST LOOP: OPEN & BUY PACKS ============
+-- [ FAST LOOP: OPEN & BUY PACKS ]
 local openPackIndex = 1
 local buyPackIndex  = 1
 
@@ -900,7 +900,7 @@ task.spawn(function()
 end)
 
 
--- ============ MAIN PROCESSING LOOP ============
+-- [ MAIN PROCESSING LOOP ]
 local timers = {
     collect  = 0, sell     = 0, delPacks = 0, gemShop  = 0,
     rebirth  = 0, equip    = 0, index    = 0, spin     = 0,
@@ -1190,7 +1190,7 @@ task.spawn(function()
 end)
 
 
--- ============ UI: SECTIONS ============
+-- [ UI: SECTIONS ]
 local TabMaster   = Setup:CreateSection("🏠 Master")
 local TabFarm     = Setup:CreateSection("⚔️ Farm & Packs")
 local TabPassive  = Setup:CreateSection("💎 Passives & Rebirth")
@@ -1209,19 +1209,9 @@ local pList = getPackList()
 if #pList == 0 then pList = { "Bronze" } end
 
 
--- ============ UI: MASTER TAB ============
+-- [ UI: MASTER TAB ]
 TabMaster:createLabel({ Name = "SSC Elite Farm v3.0 — Full Suite", Special = true })
 TabMaster:createLabel({ Name = "Paid Contributor :- aditya44325f" })
-
-TabMaster:createButton({
-    Name        = "VersusAI Pathing",
-    VersusAI    = true,
-    flagName    = "UseVersusAI",
-    Description = "Optional: enables Versus learned-route movement for any future pathing features.",
-    Callback    = function(enabled)
-        logEvent("VersusAI", enabled and "Enabled" or "Disabled")
-    end,
-})
 
 TabMaster:createLabel({ Name = "Global Controls", Special = true })
 
@@ -1305,7 +1295,7 @@ TabMaster:createButton({
 })
 
 
--- ============ UI: FARM TAB ============
+-- [ UI: FARM TAB ]
 TabFarm:createLabel({ Name = "Plot Automation", Special = true })
 
 TabFarm:createToggle({
@@ -1509,7 +1499,7 @@ TabFarm:createDropdown({
 })
 
 
--- ============ UI: PASSIVES TAB ============
+-- [ UI: PASSIVES TAB ]
 TabPassive:createLabel({ Name = "Silent Income Generators", Special = true })
 
 TabPassive:createToggle({
@@ -1599,7 +1589,7 @@ TabPassive:createToggle({
 })
 
 
--- ============ UI: HUNTING TAB ============
+-- [ UI: HUNTING TAB ]
 TabHunt:createLabel({ Name = "Target a Specific Card", Special = true })
 TabHunt:createLabel({ Name = "Roller will keep opening packs until your target drops. Auto-locks the card and stops on success." })
 
@@ -1633,7 +1623,7 @@ TabHunt:createButton({
 })
 
 
--- ============ UI: INVENTORY TAB ============
+-- [ UI: INVENTORY TAB ]
 TabInv:createLabel({ Name = "Protection (Whitelist)", Special = true })
 
 TabInv:createDropdown({
@@ -1750,7 +1740,7 @@ TabInv:createButton({
 })
 
 
--- ============ UI: WEATHER TAB ============
+-- [ UI: WEATHER TAB ]
 local weatherList = {
     "Lucky","Golden Hour","Mythic Surge","Storm","Eclipse","Blizzard",
     "Heatwave","Solar Flare","Moon Phase","Aurora","Meteor Shower",
@@ -1805,7 +1795,7 @@ TabWeather:createDropdown({
 })
 
 
--- ============ UI: SAFETY TAB ============
+-- [ UI: SAFETY TAB ]
 TabSafety:createLabel({ Name = "Anti-Detection", Special = true })
 
 TabSafety:createToggle({
@@ -1843,7 +1833,7 @@ TabSafety:createButton({
 })
 
 
--- ============ UI: SERVER HOP TAB ============
+-- [ UI: SERVER HOP TAB ]
 TabHop:createLabel({ Name = "Server Hopping", Special = true })
 
 TabHop:createDropdown({
@@ -1877,7 +1867,7 @@ TabHop:createButton({
 })
 
 
--- ============ UI: WEBHOOKS TAB ============
+-- [ UI: WEBHOOKS TAB ]
 TabWebhook:createLabel({ Name = "Discord Integration", Special = true })
 
 TabWebhook:createInputBox({
@@ -1977,7 +1967,7 @@ TabWebhook:createButton({
 })
 
 
--- ============ UI: MISC TAB ============
+-- [ UI: MISC TAB ]
 TabMisc:createLabel({ Name = "Game Modifications", Special = true })
 
 TabMisc:createToggle({
@@ -2054,7 +2044,7 @@ TabMisc:createButton({
 })
 
 
--- ============ UI: STATS TAB ============
+-- [ UI: STATS TAB ]
 TabStats:createLabel({ Name = "Live Session Analytics", Special = true })
 
 local label_cash     = TabStats:createLabel({ Name = "Cash: $0" })
@@ -2190,7 +2180,7 @@ TabStats:createButton({
 })
 
 
--- ============ UI: LOGS TAB ============
+-- [ UI: LOGS TAB ]
 TabLogs:createLabel({ Name = "Recent Events", Special = true })
 TabLogs:createLabel({ Name = "Shows the last " .. LOG_MAX .. " script-driven events. Click Refresh to update." })
 
@@ -2232,7 +2222,7 @@ task.spawn(function()
 end)
 
 
--- ============ HOTKEYS HANDLER ============
+-- [ HOTKEYS HANDLER ]
 local function flagToKey(flag)
     local v = Library.Flags[flag]
     local s = type(v) == "table" and v[1] or v
@@ -2265,6 +2255,6 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 end)
 
 
--- ============ DONE ============
+-- [ DONE ]
 logEvent("Init", "SSC Elite Farm v3.0 fully loaded.")
 print("[SSC Farm] Loaded successfully — SSC Elite Farm v3.0 Full Suite")
