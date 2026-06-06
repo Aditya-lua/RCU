@@ -148,6 +148,12 @@ local Setup = Library:Setup({
 print("[SSC Farm] Library loaded.")
 
 
+-- [ FORWARD DECLARATIONS ]
+-- declared as upvalues here so functions defined later can be called by
+-- earlier code (e.g. checkWeatherAlerts → dispatchWebhook)
+dispatchWebhook = nil
+
+
 -- [ HELPERS ]
 local function notify(title, desc, style)
     pcall(function()
@@ -450,16 +456,37 @@ end
 
 
 -- [ CARD ID LIST (for whitelist/hunt UI) ]
+-- Cap the list to avoid Versus library lag with huge dropdowns.
+-- Only include cards at Mythic+ by default; rest available via search later.
+local CARD_LIST_MIN_RARITY = 4   -- Legendary+ (1=Bronze, 2=Silver, 3=Gold, 4=Legendary, 5=Mythic)
+local CARD_LIST_HARD_CAP   = 300
+
 local cardIdList = {}
 local cardDisplayToId = {}
 do
+    local temp = {}
     for id, cfg in pairs(CardConfig.Cards or {}) do
-        local name = (cfg and cfg.DisplayName) or id
-        local label = string.format("%s [%s]", name, cfg and cfg.Rarity or "?")
-        table.insert(cardIdList, label)
-        cardDisplayToId[label] = id
+        local rarity = cfg and cfg.Rarity
+        local lvl    = (rarity and rarityOrder[rarity]) or 0
+        if lvl >= CARD_LIST_MIN_RARITY then
+            local name  = (cfg and cfg.DisplayName) or id
+            local label = string.format("%s [%s]", name, rarity or "?")
+            table.insert(temp, { label = label, id = id, lvl = lvl, name = name })
+        end
     end
-    table.sort(cardIdList)
+    -- highest rarity first, then alpha
+    table.sort(temp, function(a, b)
+        if a.lvl ~= b.lvl then return a.lvl > b.lvl end
+        return a.name < b.name
+    end)
+    for i = 1, math.min(#temp, CARD_LIST_HARD_CAP) do
+        table.insert(cardIdList, temp[i].label)
+        cardDisplayToId[temp[i].label] = temp[i].id
+    end
+end
+
+if #cardIdList == 0 then
+    table.insert(cardIdList, "(no cards found)")
 end
 
 
@@ -581,7 +608,7 @@ end
 getgenv().WebhookURL    = ""
 getgenv().WebhookPingID = ""
 
-function dispatchWebhook(payload)
+dispatchWebhook = function(payload)
     local url = getgenv().WebhookURL or ""
     if url == "" or not req then return end
     local pingId = getgenv().WebhookPingID or ""
@@ -1191,18 +1218,56 @@ end)
 
 
 -- [ UI: SECTIONS ]
-local TabMaster   = Setup:CreateSection("🏠 Master")
-local TabFarm     = Setup:CreateSection("⚔️ Farm & Packs")
-local TabPassive  = Setup:CreateSection("💎 Passives & Rebirth")
-local TabHunt     = Setup:CreateSection("🎯 Hunting")
-local TabInv      = Setup:CreateSection("📦 Inventory")
-local TabWeather  = Setup:CreateSection("🌦️ Weather")
-local TabSafety   = Setup:CreateSection("🛡️ Safety / Anti-Detect")
-local TabHop      = Setup:CreateSection("🌐 Server Hop")
-local TabWebhook  = Setup:CreateSection("📡 Webhooks")
-local TabMisc     = Setup:CreateSection("🔧 Misc & Settings")
-local TabStats    = Setup:CreateSection("📊 Analytics")
-local TabLogs     = Setup:CreateSection("📜 Logs")
+local function safeSection(name)
+    local ok, sec = pcall(function() return Setup:CreateSection(name) end)
+    if not ok or not sec then
+        warn("[SSC Farm] Failed to create section: " .. tostring(name) .. " — " .. tostring(sec))
+        -- return a stub so subsequent createX calls don't crash
+        local stub = {}
+        local function noop() return stub end
+        setmetatable(stub, { __index = function() return noop end })
+        return stub
+    end
+    -- wrap every createX method so a single bad element doesn't kill the tab
+    local original = {}
+    for _, method in ipairs({
+        "createLabel","createButton","createToggle","createSlider",
+        "createInputBox","createDropdown",
+    }) do
+        local fn = sec[method]
+        if type(fn) == "function" then
+            original[method] = fn
+            sec[method] = function(self, args)
+                local okCall, result = pcall(fn, self, args)
+                if not okCall then
+                    warn(string.format(
+                        "[SSC Farm] %s failed for '%s' in section '%s' — %s",
+                        method, tostring(args and args.Name), tostring(name), tostring(result)
+                    ))
+                    -- return a stub object with :Set so later code (label_x:Set) doesn't crash
+                    local stub = {}
+                    setmetatable(stub, { __index = function() return function() end end })
+                    return stub
+                end
+                return result
+            end
+        end
+    end
+    return sec
+end
+
+local TabMaster   = safeSection("Master")
+local TabFarm     = safeSection("Farm & Packs")
+local TabPassive  = safeSection("Passives & Rebirth")
+local TabHunt     = safeSection("Hunting")
+local TabInv      = safeSection("Inventory")
+local TabWeather  = safeSection("Weather")
+local TabSafety   = safeSection("Safety")
+local TabHop      = safeSection("Server Hop")
+local TabWebhook  = safeSection("Webhooks")
+local TabMisc     = safeSection("Misc & Settings")
+local TabStats    = safeSection("Analytics")
+local TabLogs     = safeSection("Logs")
 
 
 local pList = getPackList()
