@@ -571,6 +571,16 @@ for attempt = 1, maxRetries do
 
             task.spawn(function() while true do updateBeedexStatus(); task.wait(10) end end)
 
+            -- Find the Beedex claim remote (obfuscated name)
+            local BeedexClaimRemote = nil
+            pcall(function()
+                local servicesFolder = ReplicatedStorage.Packages.Knit.Services
+                local hiveServiceFolder = servicesFolder:GetChildren()[65]
+                if hiveServiceFolder then
+                    BeedexClaimRemote = hiveServiceFolder.RF:GetChildren()[2]
+                end
+            end)
+
             BeedexSection:Toggle("AutoClaimBeedex", {
                 Title = "Auto Claim Beedex Rewards",
                 Description = "Claims Beedex milestone rewards as soon as you discover enough unique bee types. Milestones at 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, and 63.",
@@ -589,11 +599,13 @@ for attempt = 1, maxRetries do
                                     local uniqueBees = 0
                                     for _ in pairs(beedex) do uniqueBees = uniqueBees + 1 end
 
-                                    if BeedexRewards then
+                                    if BeedexRewards and BeedexClaimRemote then
                                         local claimedRewards = playerData.claimedBeedexRewards or {}
-                                        for _, reward in ipairs(BeedexRewards) do
+                                        for rewardIndex, reward in ipairs(BeedexRewards) do
                                             if uniqueBees >= reward.required and not claimedRewards[tostring(reward.required)] then
-                                                HiveService:claimBeedexReward(reward.required)
+                                                pcall(function()
+                                                    BeedexClaimRemote:InvokeServer(rewardIndex)
+                                                end)
                                                 task.wait(1)
                                             end
                                         end
@@ -603,6 +615,33 @@ for attempt = 1, maxRetries do
                             end
                         end)
                     end
+                end
+            })
+
+            BeedexSection:Button({
+                Title = "Claim All Beedex Rewards (Bypass)",
+                Description = "Attempts to claim EVERY beedex reward regardless of how many bees you've discovered. Fires every reward index directly to the server — if the server doesn't validate, you get free rewards.",
+                Callback = function()
+                    if not BeedexClaimRemote then
+                        Library:Notify({Title = "Error", Content = "Beedex remote not found. Try rejoining.", Duration = 3})
+                        return
+                    end
+
+                    local totalRewards = BeedexRewards and #BeedexRewards or 20
+                    Library:Notify({Title = "Beedex Bypass", Content = "Firing " .. totalRewards .. " reward claims...", Duration = 3})
+
+                    task.spawn(function()
+                        local claimed = 0
+                        -- Fire every possible reward index
+                        for i = 1, totalRewards do
+                            local success = pcall(function()
+                                BeedexClaimRemote:InvokeServer(i)
+                            end)
+                            if success then claimed = claimed + 1 end
+                            task.wait(0.3)
+                        end
+                        Library:Notify({Title = "Beedex Bypass", Content = "Done! Fired " .. claimed .. "/" .. totalRewards .. " claims.", Duration = 5})
+                    end)
                 end
             })
 
