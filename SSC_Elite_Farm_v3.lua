@@ -180,18 +180,18 @@ local CORE_REMOTES = {
     "OpenPack","BuyPack","EquipCard","CollectSlot","SellCards","DeletePacks",
     "Rebirth","BuyGemShopItem","ClaimAllIndexGems","DailyReward",
     "OfflineReward","SpinWheel","RedeemCode",
+    -- Native game features (confirmed via dump):
+    "PackSettings",       -- server-side auto-open + hide animation
+    "Tournament",         -- join + equip_best
+    "UsePotion",          -- weather potions
+    "Notification",       -- listen for game notifications
 }
 -- Optional remotes (real names from dump). Lazy-loaded.
 local OPTIONAL_REMOTES = {
-    -- Wishing (real names!)
     "PerformWish","Wish",
-    -- Trophies (real names!)
     "ApplyTrophy","DestroyTrophy","ApplyWorldCupTrophy","CraftTrophy",
-    -- Tournaments (real names!)
-    "Tournament","TournamentState","TournamentTick","TournamentServer",
-    -- Leaderboard
+    "TournamentState","TournamentTick","TournamentServer",
     "RequestFriendsLeaderboard",
-    -- Misc
     "LockCard","UnlockCard",
 }
 local FUNCS = { "SpinWheelData" }
@@ -252,10 +252,24 @@ local PlayerStore   = require(RS.Source.Shared.State.PlayerStore)
 local WeatherStore  = nil
 pcall(function() WeatherStore = require(RS.Source.Shared.State.WeatherStore) end)
 
--- TournamentConfig + TrophyConfig (optional but exist per dump)
-local TournamentConfig, TrophyConfig = nil, nil
+-- Optional configs (exist per dump)
+local TournamentConfig, TrophyConfig, PotionConfig, CodeConfig = nil, nil, nil, nil
 pcall(function() TournamentConfig = require(RS.Source.Shared.Configs.TournamentConfig) end)
 pcall(function() TrophyConfig     = require(RS.Source.Shared.Configs.TrophyConfig) end)
+pcall(function() PotionConfig     = require(RS.Source.Shared.Configs.PotionConfig) end)
+pcall(function() CodeConfig       = require(RS.Source.Shared.Configs.CodeConfig) end)
+
+-- Build potion list from config
+local potionList = {}
+if PotionConfig and PotionConfig.Potions then
+    for name in pairs(PotionConfig.Potions) do
+        table.insert(potionList, name)
+    end
+    table.sort(potionList)
+end
+if #potionList == 0 then
+    potionList = { "Snowstorm Potion", "Thunderstorm Potion", "Toxic Rain Potion", "Blood Moon Potion", "Solar Eclipse Potion" }
+end
 
 
 -- [ SESSION STATS ]
@@ -589,6 +603,27 @@ if remotes.OpenPack then
 end
 
 
+-- [ GAME NOTIFICATION LISTENER (real Notification remote!) ]
+-- Webhooks any in-game toast (weather, events, admin messages) if WebhookGameNotifs is on.
+if remotes.Notification and remotes.Notification.OnClientEvent then
+    remotes.Notification.OnClientEvent:Connect(function(data)
+        if type(data) ~= "table" then return end
+        local msg = tostring(data.Msg or data.msg or "")
+        if msg == "" then return end
+        if Library.Flags["WebhookGameNotifs"] then
+            local success = (data.Success ~= false)
+            dispatchWebhook({ embeds = {{
+                title = success and "🟢 Game Notification" or "🔴 Game Notification",
+                description = msg,
+                color = success and 3066993 or 15158332,
+                footer = { text = "Spin a Soccer Card • " .. os.date("%H:%M:%S") },
+            }}})
+        end
+        logEvent("GameNotif", msg)
+    end)
+end
+
+
 -- [ TOURNAMENT STATE LISTENER (real remote!) ]
 do
     local tsRemote = remotes.TournamentState or remotes.Tournament
@@ -727,28 +762,31 @@ task.spawn(function()
 end)
 
 
--- [ HIDE PACK OPENING ANIMATION (clean - hides reveal frame, NOT camera/blur) ]
--- The pack opening creates a GUI named something like "PackOpening" or "CardReveal".
--- We toggle the gui's Enabled state only, never touch camera/lighting.
+-- [ NATIVE PACK SETTINGS (server-side toggles via PackSettings remote) ]
+-- The game has built-in toggles for auto-open & hide-animation.
+-- We just mirror our UI flags to the server.
+local lastPackSettings = { hideAnim = nil, autoOpen = nil }
+
+local function syncPackSettings()
+    if not remotes.PackSettings then return end
+    local hide = Library.Flags["PackHideAnim"] == true
+    local auto = Library.Flags["PackAutoOpen"] == true
+    if hide ~= lastPackSettings.hideAnim then
+        lastPackSettings.hideAnim = hide
+        pcall(function() remotes.PackSettings:FireServer("packHideAnimation", hide) end)
+        logEvent("PackSettings", "hideAnimation = " .. tostring(hide))
+    end
+    if auto ~= lastPackSettings.autoOpen then
+        lastPackSettings.autoOpen = auto
+        pcall(function() remotes.PackSettings:FireServer("packAutoOpen", auto) end)
+        logEvent("PackSettings", "autoOpen = " .. tostring(auto))
+    end
+end
+
+-- Poll every 1s in case user toggles
 task.spawn(function()
-    while task.wait(0.2) do
-        if Library.Flags["AutoHideAnimation"] then
-            local pgui = client:FindFirstChild("PlayerGui")
-            if pgui then
-                for _, gui in ipairs(pgui:GetChildren()) do
-                    if gui:IsA("ScreenGui") and gui.Enabled then
-                        local nm = string.lower(gui.Name)
-                        -- Only target obvious pack-opening reveal GUIs.
-                        -- Skip HUD, notifications, shop, indices, etc.
-                        if (nm:find("packopen") or nm:find("revealpack")
-                            or nm:find("cardreveal") or nm == "packopeningui"
-                            or nm == "openpack") then
-                            gui.Enabled = false
-                        end
-                    end
-                end
-            end
-        end
+    while task.wait(1) do
+        pcall(syncPackSettings)
     end
 end)
 
@@ -758,6 +796,7 @@ local timers = {
     collect=0, sell=0, delPacks=0, gemShop=0, rebirth=0, equip=0,
     index=0, spin=0, daily=0, offline=0, webhook=os.clock(),
     hourly=os.clock(), wish=0, trophy=0, hop=0,
+    tourneyJoin=0, tourneyEquip=0, potion=0,
 }
 
 task.spawn(function()
@@ -910,16 +949,65 @@ task.spawn(function()
             end)
         end
 
-        -- Redeem codes (once per session)
+        -- Auto Join Tournament (native remote: Tournament('join'))
+        if Library.Flags["AutoJoinTournament"] and (now - timers.tourneyJoin) >= 15 then
+            timers.tourneyJoin = now
+            pcall(function()
+                if not remotes.Tournament then return end
+                if tournamentState.inTournament then return end
+                remotes.Tournament:FireServer("join")
+                tournamentState.joins = tournamentState.joins + 1
+                logEvent("Tournament", "Auto-joined")
+            end)
+        end
+
+        -- Auto Equip Best Tournament Team (native: Tournament('equip_best'))
+        if Library.Flags["AutoEquipBestTourney"] and (now - timers.tourneyEquip) >= 30 then
+            timers.tourneyEquip = now
+            pcall(function()
+                if remotes.Tournament then
+                    remotes.Tournament:FireServer("equip_best")
+                end
+            end)
+        end
+
+        -- Auto Use Potion (native: UsePotion('Snowstorm Potion' etc))
+        if Library.Flags["AutoUsePotion"] and (now - timers.potion) >= 300 then
+            timers.potion = now
+            pcall(function()
+                if not remotes.UsePotion then return end
+                local f = Library.Flags["PotionType"]
+                local p = (type(f)=="table" and f[1]) or f or potionList[1]
+                if p and p ~= "" then
+                    remotes.UsePotion:FireServer(p)
+                    logEvent("Potion", "Used " .. p)
+                end
+            end)
+        end
+
+        -- Redeem codes (once per session) — combines external URL + local CodeConfig wordlist
         if Library.Flags["AutoRedeemCodes"] and not stats.codesRedeemed then
             stats.codesRedeemed = true
             task.spawn(function()
-                local codes = {}
+                local codes, seen = {}, {}
+                -- 1. External github code list
                 local ok, res = pcall(function() return game:HttpGet(CODES_URL) end)
                 if ok and type(res) == "string" then
                     for line in res:gmatch("[^\r\n]+") do
                         local c = line:gsub("%s+", "")
-                        if c ~= "" and #c >= 3 then table.insert(codes, c) end
+                        if c ~= "" and #c >= 3 and not seen[c] then
+                            table.insert(codes, c)
+                            seen[c] = true
+                        end
+                    end
+                end
+                -- 2. Local CodeConfig WordList (in-memory, always up-to-date)
+                if CodeConfig and CodeConfig.WordList then
+                    for _, w in ipairs(CodeConfig.WordList) do
+                        if not seen[w] then
+                            table.insert(codes, w)
+                            seen[w] = true
+                        end
                     end
                 end
                 if remotes.RedeemCode and #codes > 0 then
@@ -927,7 +1015,7 @@ task.spawn(function()
                         pcall(function() remotes.RedeemCode:FireServer(string.lower(code)) end)
                         task.wait(CODE_WAIT)
                     end
-                    logEvent("Codes", "Redeemed " .. #codes .. " codes.")
+                    logEvent("Codes", "Tried " .. #codes .. " codes (external + CodeConfig).")
                 end
             end)
         end
@@ -1470,7 +1558,7 @@ TabAuto:createToggle({
     Name        = "🎟️ Auto Redeem Codes",
     flagName    = "AutoRedeemCodes",
     Flag        = false,
-    Description = "Fetches & redeems known codes once per session.",
+    Description = "Redeems external + native CodeConfig.WordList (~60 codes) once per session.",
     Callback    = function() end,
 })
 
@@ -1581,8 +1669,24 @@ TabExtra:createToggle({
     Callback    = function() end,
 })
 
-TabExtra:createLabel({ Name = "🥇 Tournament Tracker", Special = true })
-TabExtra:createLabel({ Name = "Auto-monitors via TournamentState/Tick remotes. Sends webhook on finish." })
+TabExtra:createLabel({ Name = "🥇 Tournament (Native)", Special = true })
+TabExtra:createLabel({ Name = "Uses real Tournament remote: 'join' and 'equip_best' actions." })
+
+TabExtra:createToggle({
+    Name        = "Auto Join Tournament",
+    flagName    = "AutoJoinTournament",
+    Flag        = false,
+    Description = "Fires Tournament('join') every 15s when not already in one.",
+    Callback    = function() end,
+})
+
+TabExtra:createToggle({
+    Name        = "Auto Equip Best Tournament Team",
+    flagName    = "AutoEquipBestTourney",
+    Flag        = false,
+    Description = "Fires Tournament('equip_best') every 30s — game auto-picks your strongest team.",
+    Callback    = function() end,
+})
 
 TabExtra:createToggle({
     Name        = "Webhook on Tournament Finish",
@@ -1596,38 +1700,77 @@ local lbl_t_join  = TabExtra:createLabel({ Name = "Joined: 0" })
 local lbl_t_win   = TabExtra:createLabel({ Name = "Top-3 finishes: 0" })
 local lbl_t_place = TabExtra:createLabel({ Name = "Last placement: --" })
 
+TabExtra:createLabel({ Name = "🧪 Weather Potions", Special = true })
+TabExtra:createLabel({ Name = "Uses UsePotion remote to force a weather event (300s duration)." })
 
--- =============================================
--- 🧹 CLEANUP — hide animations, suppress floats
--- =============================================
-
-TabClean:createLabel({ Name = "Hide Pack-Open Animation", Special = true })
-TabClean:createLabel({ Name = "Disables ONLY the PackOpening / CardReveal GUIs. Does not touch camera, blur, HUD, or shop." })
-
-TabClean:createToggle({
-    Name        = "🎬 Auto Hide Pack Animation",
-    flagName    = "AutoHideAnimation",
+TabExtra:createToggle({
+    Name        = "Auto Use Selected Potion",
+    flagName    = "AutoUsePotion",
     Flag        = false,
+    Description = "Fires UsePotion every 300s (matches the in-game cooldown).",
     Callback    = function() end,
 })
 
-TabClean:createLabel({ Name = "Hide Stacking Earnings Toasts", Special = true })
-TabClean:createLabel({ Name = "Removes the floating '+$58.50M' text that piles up while farming. Other notifications stay." })
+TabExtra:createDropdown({
+    Name        = "Potion to Use",
+    flagName    = "PotionType",
+    Flag        = { potionList[1] },
+    List        = potionList,
+    multi       = false,
+    Callback    = function() end,
+})
+
+TabExtra:createButton({
+    Name        = "🧪 Use Potion Now",
+    Callback    = function()
+        if not remotes.UsePotion then notify("Potion", "UsePotion remote missing.", "warning") return end
+        local f = Library.Flags["PotionType"]
+        local p = (type(f)=="table" and f[1]) or f or potionList[1]
+        pcall(function() remotes.UsePotion:FireServer(p) end)
+        logEvent("Potion", "Used " .. tostring(p))
+    end,
+})
+
+
+-- =============================================
+-- 🧹 CLEANUP — native pack settings + UI suppression
+-- =============================================
+
+TabClean:createLabel({ Name = "🎬 Native Pack Settings", Special = true })
+TabClean:createLabel({ Name = "These call the game's own PackSettings remote — proper, server-side, no UI hacks." })
 
 TabClean:createToggle({
-    Name        = "💰 Hide Floating Earnings",
+    Name        = "Hide Pack Animation (Native)",
+    flagName    = "PackHideAnim",
+    Flag        = false,
+    Description = "Fires PackSettings('packHideAnimation', true). Server-side, no blur.",
+    Callback    = function() syncPackSettings() end,
+})
+
+TabClean:createToggle({
+    Name        = "Pack Auto-Open (Native)",
+    flagName    = "PackAutoOpen",
+    Flag        = false,
+    Description = "Fires PackSettings('packAutoOpen', true). The game itself opens packs as you obtain them.",
+    Callback    = function() syncPackSettings() end,
+})
+
+TabClean:createLabel({ Name = "💰 Earnings Floats", Special = true })
+
+TabClean:createToggle({
+    Name        = "Hide Floating +$ Toasts",
     flagName    = "HideEarningsFloats",
     Flag        = false,
+    Description = "Hides only the '+$58.50M' floating labels inside the Notification GUI.",
     Callback    = function() end,
 })
 
-TabClean:createLabel({ Name = "General Suppression", Special = true })
+TabClean:createLabel({ Name = "🔕 General Suppression", Special = true })
 
 TabClean:createToggle({
     Name        = "Disable All Notifications",
     flagName    = "DisableNotifs",
     Flag        = false,
-    Description = "Hides the entire Notification ScreenGui.",
     Callback    = function() end,
 })
 
@@ -1697,6 +1840,13 @@ TabHooks:createToggle({
 
 TabHooks:createToggle({
     Name = "🌟 Rebirth Milestones", flagName = "WebhookMilestones", Flag = false,
+    Callback = function() end,
+})
+
+TabHooks:createToggle({
+    Name = "🔔 In-Game Notifications (weather/events/admin)",
+    flagName = "WebhookGameNotifs", Flag = false,
+    Description = "Mirrors every Notification toast (Solar Eclipse, admin msgs, etc.) to Discord.",
     Callback = function() end,
 })
 
@@ -1813,5 +1963,8 @@ end)
 
 
 -- [ DONE ]
+-- Push initial pack settings to server so the UI state matches the game
+task.delay(2, function() pcall(syncPackSettings) end)
+
 print("[SSC] Loaded. " .. #CORE_REMOTES .. " core remotes, " .. #cardIdList .. " cards in dropdowns.")
 logEvent("Init", "Spin a Soccer Card loaded.")
