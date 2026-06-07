@@ -356,6 +356,44 @@ local function formatCash(n)
     return tostring(math.floor(n))
 end
 
+-- Map a card rarity name to a Discord embed color (decimal int).
+-- Matches Roblox/game color palette so embeds visually match the card.
+local RARITY_COLORS = {
+    Common              = 9807270,   -- gray
+    Bronze              = 13467442,  -- bronze
+    Silver              = 12500670,  -- silver
+    Gold                = 16766720,  -- gold
+    Platinum            = 11725548,  -- light teal
+    Legendary           = 16753920,  -- orange
+    Mythic              = 14684400,  -- pink/magenta
+    Mythical            = 14684400,
+    Divine              = 4233727,   -- cyan
+    Primordial          = 9856770,   -- purple
+    ["Azure Zenith"]    = 3447003,   -- blue
+    ["Crimson Zenith"]  = 13632027,  -- red
+    Oblivion            = 2829617,   -- dark blue
+    Eternity            = 16767093,  -- light gold
+    Astral              = 9510911,   -- light purple
+    Sovereign           = 16776960,  -- yellow
+    Vandal              = 16711935,  -- magenta
+    ["The Monarch"]     = 16766720,
+    Tyrant              = 11403055,
+    Verdant             = 4915330,
+    Silvane             = 12500670,
+    Lunar               = 14079702,
+    Solar               = 16762880,
+    Nether              = 4194304,
+    Aether              = 11192319,
+    ["Player of the Month"] = 16766720,
+    Exclusive           = 16711680,
+    ["Secret Exclusive"] = 5505024,
+}
+local DEFAULT_EMBED_COLOR = 3447003
+
+local function rarityColor(rarityName)
+    return RARITY_COLORS[tostring(rarityName)] or DEFAULT_EMBED_COLOR
+end
+
 local function getSingleFlag(flagName, defaultValue)
     local value = Library.Flags[flagName]
     if type(value) == "table" then
@@ -658,9 +696,19 @@ local BUTTON_NAMES_TO_KILL = {
     ["Auto Skip"] = true, ["Auto Open"] = true,
 }
 
+-- Aggressive list: any ScreenGui whose name contains any of these is killed
+-- when Silent Open is on. Also handles the BlurEffect that the cutscene adds.
 local REVEAL_GUI_NAME_PATTERNS = {
     "packopen", "openpack", "packreveal", "cardreveal", "revealpack",
     "reveal", "packopening", "openinganim", "packanim",
+    "open_pack", "open-pack", "cardpopup", "rollscreen", "rollui",
+    "rolling", "gachareveal", "boxopen", "cardresult",
+}
+
+-- Class names of effects we want gone during silent open (cutscene blur)
+local CUTSCENE_EFFECT_CLASSES = {
+    BlurEffect = true, ColorCorrectionEffect = true,
+    DepthOfFieldEffect = true, BloomEffect = true,
 }
 
 local function nameLooksLikeRevealGui(name)
@@ -672,6 +720,27 @@ local function nameLooksLikeRevealGui(name)
     return false
 end
 
+-- Kill cutscene post-process effects (the blur lingering after silent open)
+local function nukeCutsceneEffects()
+    pcall(function()
+        local lighting = game:GetService("Lighting")
+        for _, fx in ipairs(lighting:GetChildren()) do
+            if CUTSCENE_EFFECT_CLASSES[fx.ClassName] and fx.Enabled then
+                fx.Enabled = false
+            end
+        end
+        -- Also check workspace.CurrentCamera (some games attach blur there)
+        local cam = Workspace.CurrentCamera
+        if cam then
+            for _, fx in ipairs(cam:GetChildren()) do
+                if CUTSCENE_EFFECT_CLASSES[fx.ClassName] and fx.Enabled then
+                    fx.Enabled = false
+                end
+            end
+        end
+    end)
+end
+
 local function tryKillBadDescendant(desc)
     if not desc or not desc.Parent then return end
     -- 1. Buttons we want gone
@@ -679,22 +748,49 @@ local function tryKillBadDescendant(desc)
         pcall(function() desc:Destroy() end)
         return
     end
-    -- 2. Reveal screen GUIs (silent open)
-    if desc:IsA("ScreenGui") and Library.Flags["SilentOpenPacks"] and nameLooksLikeRevealGui(desc.Name) then
+    -- 2. Reveal screen GUIs (silent open) — destroy entirely
+    if Library.Flags["SilentOpenPacks"] and desc:IsA("ScreenGui") and nameLooksLikeRevealGui(desc.Name) then
         pcall(function() desc.Enabled = false end)
         pcall(function() desc:Destroy() end)
         return
     end
+    -- 3. Frames whose name matches reveal patterns (some games nest the reveal in MainGui)
+    if Library.Flags["SilentOpenPacks"] and (desc:IsA("Frame") or desc:IsA("ImageLabel"))
+       and nameLooksLikeRevealGui(desc.Name) then
+        pcall(function() desc.Visible = false end)
+        return
+    end
 end
 
+-- LIGHT version: only walks TOP-LEVEL ScreenGui children + their ButtonsContainer.
+-- This is the safety-net loop — the heavy lifting is done by DescendantAdded.
+-- Walking the full PlayerGui (often 3000+ descendants) was the #1 source of lag.
 local function destroyRollUIs()
     pcall(function()
         local playerGui = client:FindFirstChild("PlayerGui")
         if not playerGui then return end
-        for _, gui in ipairs(playerGui:GetDescendants()) do
-            tryKillBadDescendant(gui)
+        for _, screenGui in ipairs(playerGui:GetChildren()) do
+            -- Check the top-level GUI itself
+            tryKillBadDescendant(screenGui)
+            -- Only walk one level deep, looking for common "ButtonsContainer" patterns
+            if screenGui:IsA("ScreenGui") then
+                local frame = screenGui:FindFirstChild("Frame")
+                if frame then
+                    local buttons = frame:FindFirstChild("ButtonsContainer")
+                    if buttons then
+                        for _, btn in ipairs(buttons:GetChildren()) do
+                            if BUTTON_NAMES_TO_KILL[btn.Name] then
+                                pcall(function() btn:Destroy() end)
+                            end
+                        end
+                    end
+                end
+            end
         end
     end)
+    if Library.Flags["SilentOpenPacks"] then
+        nukeCutsceneEffects()
+    end
 end
 
 -- Hook DescendantAdded once for instant kills
@@ -707,6 +803,15 @@ local function installRollUIHook()
     playerGui.DescendantAdded:Connect(function(d)
         -- Defer one frame so name/parent are stable
         task.defer(tryKillBadDescendant, d)
+    end)
+    -- Also hook Lighting + Camera for blur effects added at runtime
+    pcall(function()
+        local lighting = game:GetService("Lighting")
+        lighting.ChildAdded:Connect(function(fx)
+            if Library.Flags["SilentOpenPacks"] and CUTSCENE_EFFECT_CLASSES[fx.ClassName] then
+                task.defer(function() pcall(function() fx.Enabled = false end) end)
+            end
+        end)
     end)
     -- Also hammer everything that exists right now
     destroyRollUIs()
@@ -812,7 +917,7 @@ if remotes.OpenPack and remotes.OpenPack.OnClientEvent then
             embeds = {{
                     title = "🎉 Rare Card Rolled!",
                     description = "You just unboxed a high-tier card!",
-                    color = 16766720,
+                    color = rarityColor(cData.Rarity),
                     thumbnail = { url = thumbnailUrl },
                     fields = {
                         { name = "🎴 Card Name", value = tostring(cData.DisplayName or cData.Name or "Unknown"), inline = false },
@@ -837,6 +942,72 @@ end
 local packList = getPackList()
 local openPackIndex = 1
 local buyPackIndex = 1
+
+-- =============================================
+-- STOCK TRACKER (via Notification remote)
+-- The game broadcasts "X is out of stock!" messages when we try to buy/craft
+-- something that's depleted. We listen and skip that item for 30s.
+-- =============================================
+local stockState = {
+    packCooldown   = {},   -- [packName]   = os.clock() until retry allowed
+    trophyCooldown = {},   -- [trophyName] = os.clock() until retry allowed
+    cooldownSecs   = 30,
+}
+
+local function markPackOutOfStock(packName)
+    if not packName or packName == "" then return end
+    stockState.packCooldown[packName] = os.clock() + stockState.cooldownSecs
+end
+
+local function markTrophyOutOfStock(trophyName)
+    if not trophyName or trophyName == "" then return end
+    stockState.trophyCooldown[trophyName] = os.clock() + stockState.cooldownSecs
+end
+
+local function isPackInStock(packName)
+    local t = stockState.packCooldown[packName]
+    return not t or os.clock() >= t
+end
+
+local function isTrophyInStock(trophyName)
+    local t = stockState.trophyCooldown[trophyName]
+    return not t or os.clock() >= t
+end
+
+-- Listen to game Notification remote for stock-out messages
+do
+    local notifRemote = getRemote("Notification")
+    if notifRemote then
+        local ok, cls = pcall(function() return notifRemote.ClassName end)
+        if ok and cls == "RemoteEvent" and notifRemote.OnClientEvent then
+            -- Track the last pack/trophy each interval tried, so we know what to mark
+            notifRemote.OnClientEvent:Connect(function(data)
+                pcall(function()
+                    if type(data) ~= "table" then return end
+                    local msg = tostring(data.Msg or data.message or "")
+                    if msg == "" then return end
+                    local low = string.lower(msg)
+                    -- "This pack is out of stock!" / "Trophy is out of stock!"
+                    if string.find(low, "pack is out of stock", 1, true)
+                       or string.find(low, "pack is sold out", 1, true) then
+                        local lastPack = stockState._lastPackTried
+                        if lastPack then
+                            markPackOutOfStock(lastPack)
+                            stats._packsSkippedNoStock = (stats._packsSkippedNoStock or 0) + 1
+                        end
+                    elseif string.find(low, "trophy is out of stock", 1, true)
+                           or string.find(low, "trophy is sold out", 1, true) then
+                        local lastTrophy = stockState._lastTrophyTried
+                        if lastTrophy then
+                            markTrophyOutOfStock(lastTrophy)
+                            stats._trophiesSkippedNoStock = (stats._trophiesSkippedNoStock or 0) + 1
+                        end
+                    end
+                end)
+            end)
+        end
+    end
+end
 
 local TabFarm    = Setup:CreateSection("⚔️ Farm & Packs")
 local TabPassive = Setup:CreateSection("💎 Passives & Rebirth")
@@ -990,7 +1161,17 @@ TabFarm:createSlider({
     value = PACK_BUY_MIN_DELAY,
     minValue = 0.05,
     maxValue = 900,
-    Description = "Delay between pack purchases. Lower values are clamped slightly to protect FPS.",
+    Description = "Delay between buy bursts. Lower = faster spending.",
+    Callback = function() end,
+})
+
+TabFarm:createSlider({
+    Name = "Buy Burst (per tick)",
+    flagName = "BuyBurst",
+    value = 5,
+    minValue = 1,
+    maxValue = 20,
+    Description = "Max packs bought per tick. Higher = drains cash faster but uses more CPU. Default 5.",
     Callback = function() end,
 })
 
@@ -1182,12 +1363,13 @@ TabExtras:createButton({
 })
 
 TabExtras:createLabel({ Name = "🏆 Trophies", Special = true })
+TabExtras:createLabel({ Name = "✓ Stock tracking: skips selected trophies for 30s after \"out of stock\" notification." })
 
 TabExtras:createToggle({
     Name = "Auto Craft Selected Trophies",
     flagName = "AutoCraftTrophy",
     Flag = false,
-    Description = "Calls CraftTrophy(name) for each selected trophy every 15s.",
+    Description = "Crafts each in-stock selected trophy every 15s. Counter only ticks on confirmed craft.",
     Callback = function() end,
 })
 
@@ -1369,6 +1551,8 @@ end, function()
     end
 end, { persistent = true, minDelay = PACK_OPEN_MIN_DELAY })
 
+-- Auto Buy Packs: buys a SMALL burst per tick (instead of 200) so we don't
+-- spam the network and freeze the client. Higher-tier packs are prioritized.
 interval("AutoBuyPacks", "AutoBuyPacks", function()
     return math.max(tonumber(Library.Flags["BuyDelay"]) or PACK_BUY_MIN_DELAY, PACK_BUY_MIN_DELAY)
 end, function()
@@ -1376,23 +1560,36 @@ end, function()
 
     local selected = getMultiFlag("SelectedBuyPacks", { packList[1] })
     if #selected == 0 then return end
-    if buyPackIndex > #selected then buyPackIndex = 1 end
-
-    local packName = selected[buyPackIndex]
-    buyPackIndex += 1
 
     local packs = PackConfig and PackConfig.Packs or {}
-    local packData = packs[packName]
-    local packPrice = 0
-    if type(packData) == "table" then
-        packPrice = tonumber(packData.Price) or 0
-    end
 
-    if packPrice > 0 and getCash() >= packPrice and fireRemote(remotes.BuyPack, packName) then
-        stats.bought += 1
-        task.wait(PACK_BUY_MIN_DELAY)
-    else
-        task.wait(0.03)
+    -- Sort selected by price DESC so we burn cash on top-tier first
+    local sorted = {}
+    for _, packName in ipairs(selected) do
+        local pd = packs[packName]
+        local price = (type(pd) == "table" and tonumber(pd.Price)) or 0
+        if price > 0 then
+            table.insert(sorted, { name = packName, price = price })
+        end
+    end
+    table.sort(sorted, function(a, b) return a.price > b.price end)
+
+    -- Conservative: at most 5 buys per tick total (tunable via slider).
+    -- This is still 5× faster than the old "one per tick" but doesn't melt the CPU.
+    local burstCap = math.max(1, math.min(20, tonumber(Library.Flags["BuyBurst"]) or 5))
+    local fired = 0
+    for _, entry in ipairs(sorted) do
+        if fired >= burstCap then break end
+        if isPackInStock(entry.name) and getCash() >= entry.price then
+            stockState._lastPackTried = entry.name
+            if fireRemote(remotes.BuyPack, entry.name) then
+                stats.bought += 1
+                fired += 1
+                task.wait(PACK_BUY_MIN_DELAY)
+            else
+                break
+            end
+        end
     end
 end, { persistent = true, minDelay = PACK_BUY_MIN_DELAY })
 
@@ -1513,72 +1710,156 @@ end, { persistent = true })
 -- =============================================
 -- AUTO CRAFT TROPHY (multi-select; needs trophy NAME arg)
 -- =============================================
+-- AUTO CRAFT TROPHY
+-- Only fires for trophies that are IN STOCK. Counter only increments after
+-- we confirm via PlayerData that the trophy actually appeared in inventory.
+-- Helper: count how many of a trophy the player owns (single PlayerData read)
+local function countTrophy(playerData, name)
+    if not playerData then return 0 end
+    local t = playerData.trophies or {}
+    local n = 0
+    for k, tr in pairs(t) do
+        local trName = (type(tr) == "table" and (tr.name or tr.id)) or (type(k) == "string" and k or nil)
+        if trName == name then n += 1 end
+    end
+    return n
+end
+
 interval("AutoCraftTrophy", "AutoCraftTrophy", 15, function()
     if not remotes.CraftTrophy then return end
     local selected = getMultiFlag("CraftTrophyList", {})
     if #selected == 0 then return end
+
+    -- Single snapshot of "before" counts for all selected trophies
+    local before = {}
+    local snapBefore = getPlayerData()
     for _, label in ipairs(selected) do
         local name = trophyLabelToName[label] or label
-        if fireRemote(remotes.CraftTrophy, name) then
-            stats.trophiesCrafted += 1
+        before[name] = countTrophy(snapBefore, name)
+    end
+
+    -- Fire crafts in a small burst (cap 3 per tick)
+    local cap, fired = 3, 0
+    for _, label in ipairs(selected) do
+        if fired >= cap then break end
+        local name = trophyLabelToName[label] or label
+        if isTrophyInStock(name) then
+            stockState._lastTrophyTried = name
+            if fireRemote(remotes.CraftTrophy, name) then
+                fired += 1
+                task.wait(0.25)
+            end
+        end
+    end
+    if fired == 0 then return end
+
+    -- Wait for server to apply, then ONE delta-snapshot
+    task.wait(0.4)
+    local snapAfter = getPlayerData()
+    for name, beforeCount in pairs(before) do
+        local afterCount = countTrophy(snapAfter, name)
+        if afterCount > beforeCount then
+            stats.trophiesCrafted += (afterCount - beforeCount)
             if Library.Flags["WebhookTrophy"] then
                 dispatchWebhook({ embeds = {{
                     title = "🏆 Trophy Crafted",
-                    description = "Crafted **" .. tostring(name) .. "**",
+                    description = "Crafted **" .. tostring(name) .. "** (+" .. (afterCount - beforeCount) .. ")",
                     color = 16766720,
                     footer = { text = "Spin a Soccer Card" },
                 }}})
             end
         end
-        task.wait(0.15)
     end
 end, { persistent = true })
 
 -- =============================================
--- AUTO APPLY TROPHY (best trophy → best plot)
--- ApplyTrophy(trophyName, plotNumber)
--- =============================================
+-- AUTO APPLY TROPHY — smart version
+-- 1. Build a sorted list of plots by card EPS (best first)
+-- 2. Build a sorted list of UNEQUIPPED trophies in inventory (best first)
+-- 3. For each plot (best → worst):
+--    a. If plot has no trophy → apply best unequipped trophy that's better than nothing
+--    b. If plot already has a trophy → compare its tier to the best inventory trophy.
+--       If inventory has something better → DestroyTrophy(plot) then ApplyTrophy(better, plot)
+--       Otherwise skip this plot and move on to the next.
+local function trophyTier(trophyName)
+    local source = (TrophyConfig and TrophyConfig.Trophies) or TrophyConfig or {}
+    local cfg = source[trophyName]
+    if type(cfg) ~= "table" then return 0 end
+    return rarityOrder[cfg.Rarity] or 0
+end
+
 interval("AutoApplyTrophy", "AutoApplyTrophy", 20, function()
     if not remotes.ApplyTrophy then return end
     local data = getPlayerData()
     if not data then return end
     local trophies = data.trophies or {}
     local slots = data.slots or {}
-    local trophyDefsSource = (TrophyConfig and TrophyConfig.Trophies) or TrophyConfig or {}
 
-    -- Available unequipped trophies sorted by rarity desc
-    local available = {}
-    for k, tr in pairs(trophies) do
-        if type(tr) == "table" then
-            local trophyName = tr.name or tr.id or (type(k) == "string" and k or nil)
-            local equipped = tr.equipped or tr.equippedTo or tr.plot
-            if trophyName and not equipped then
-                local cfg = trophyDefsSource[trophyName]
-                local rarity = (type(cfg) == "table" and cfg.Rarity) or "Bronze"
-                table.insert(available, { name = trophyName, lvl = rarityOrder[rarity] or 0 })
-            end
-        end
-    end
-    table.sort(available, function(a, b) return a.lvl > b.lvl end)
-    if #available == 0 then return end
-
-    -- Plots sorted by income of equipped card desc; skip plots with trophy
+    -- 1. Plots sorted by card EPS desc (we want BEST card to get BEST trophy)
     local plotList = {}
     for slotIndex, sd in pairs(slots) do
-        if type(sd) == "table" and sd.card and not (sd.trophy or sd.trophyName) then
+        if type(sd) == "table" and sd.card then
             local plot = tonumber(slotIndex) or slotIndex
             if type(plot) == "number" then
-                table.insert(plotList, { plot = plot, inc = getCardScore(sd.card) })
+                local existingTrophy = sd.trophy or sd.trophyName or sd.appliedTrophy
+                local existingName = nil
+                if type(existingTrophy) == "table" then
+                    existingName = existingTrophy.name or existingTrophy.id
+                elseif type(existingTrophy) == "string" then
+                    existingName = existingTrophy
+                end
+                table.insert(plotList, {
+                    plot = plot,
+                    inc = getCardScore(sd.card),
+                    existingTrophy = existingName,
+                    existingTier = existingName and trophyTier(existingName) or -1,
+                })
             end
         end
     end
     table.sort(plotList, function(a, b) return a.inc > b.inc end)
+    if #plotList == 0 then return end
 
-    for i = 1, math.min(#available, #plotList) do
-        if fireRemote(remotes.ApplyTrophy, available[i].name, plotList[i].plot) then
-            stats.trophiesApplied += 1
+    -- 2. Build available trophy list ONCE (sorted by tier desc).
+    -- We use a "consumed" tracker by index instead of re-querying after each action.
+    local available = {}
+    for k, tr in pairs(trophies) do
+        if type(tr) == "table" then
+            local trName = tr.name or tr.id or (type(k) == "string" and k or nil)
+            local equipped = tr.equipped or tr.equippedTo or tr.plot
+            if trName and not equipped then
+                table.insert(available, { name = trName, tier = trophyTier(trName), used = false })
+            end
         end
-        task.wait(0.15)
+    end
+    table.sort(available, function(a, b) return a.tier > b.tier end)
+    if #available == 0 then return end
+
+    -- 3. Walk plots; for each, take next-best unused trophy if it's an UPGRADE
+    local cap = 6  -- max upgrades per tick to keep CPU light
+    local done = 0
+    for _, plotEntry in ipairs(plotList) do
+        if done >= cap then break end
+
+        -- find best unused trophy
+        local bestIdx, best = nil, nil
+        for i, t in ipairs(available) do
+            if not t.used then bestIdx, best = i, t break end
+        end
+        if not best then break end
+
+        if best.tier > plotEntry.existingTier then
+            if plotEntry.existingTrophy and remotes.DestroyTrophy then
+                fireRemote(remotes.DestroyTrophy, plotEntry.plot)
+                task.wait(0.2)
+            end
+            if fireRemote(remotes.ApplyTrophy, best.name, plotEntry.plot) then
+                stats.trophiesApplied += 1
+                available[bestIdx].used = true
+                done += 1
+                task.wait(0.2)
+            end
+        end
     end
 end, { persistent = true })
 
@@ -1836,9 +2117,10 @@ interval("SSC_SuppressFlagSync", nil, 1, function()
     syncUiSuppressFlags()
 end)
 
--- Tight safety-net loop that nukes any AutoSkip/AutoOpen button that snuck past
--- the DescendantAdded hook. Also enforces silent pack opening.
-interval("SSC_RollUINuker", nil, 0.1, function()
+-- Safety-net loop. Runs every 2 seconds (instead of 0.1s) because the
+-- DescendantAdded listener catches 99% of cases instantly — this is just a
+-- backup for anything that slipped through. 0.1s was hammering the CPU.
+interval("SSC_RollUINuker", nil, 2, function()
     destroyRollUIs()
 end)
 
