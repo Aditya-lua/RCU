@@ -1,129 +1,1635 @@
--- // ============================================
--- // Spin a Soccer Card
--- // Library: Versus Airlines (NewLibrary.lua)
--- // ============================================
+local request = (syn and syn.request) or (http and http.request) or http_request;
 
-
--- [ SERVICES ]
-local Players          = game:GetService("Players")
-local RS               = game:GetService("ReplicatedStorage")
-local CoreGui          = game:GetService("CoreGui")
-local HttpService      = game:GetService("HttpService")
-local MPS              = game:GetService("MarketplaceService")
-local Workspace        = game:GetService("Workspace")
-local RunService       = game:GetService("RunService")
-local VirtualUser      = game:GetService("VirtualUser")
-local TeleportService  = game:GetService("TeleportService")
+-- Essential services
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local GuiService       = game:GetService("GuiService")
+local LightingService = game:GetService("Lighting")
+local VirtualUser = game:GetService("VirtualUser")
+local CoreGui = game:GetService("CoreGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local PathfindingService = game:GetService("PathfindingService")
+local Workspace = game:GetService("Workspace")
+local Camera = Workspace.Camera
 
-local client   = Players.LocalPlayer
-local PLACE_ID = game.PlaceId
+local client = Players.LocalPlayer
 
+-- Load UI
+print("Loading Library...")
 
--- [ CONSTANTS ]
-local LIBRARY_URL      = "https://versusairlines.top/scripts/NewLibrary.lua"
-local ROBLOX_THUMBS    = "https://thumbnails.roblox.com/v1/assets?assetIds=%s&returnPolicy=PlaceHolder&size=420x420&format=Png&isCircular=false"
-local ROBLOX_AVATAR    = "https://www.roblox.com/headshot-thumbnail/image?userId=%d&width=150&height=150&format=png"
-local SERVERS_API      = "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"
+local Library = loadstring(game:HttpGet("https://versusairlines.top/scripts/NewLibrary.lua"))()
 
-local COLLECT_DEFAULT       = 3
-local STATS_DELAY_DEFAULT   = 15
-local MIN_GEMS_DEFAULT      = 100
-local SELL_DEFAULT          = "Silver"
-local RARITY_THRESH_DEFAULT = "Mythic"
-local REBIRTH_CD_NORMAL     = 15
-local REBIRTH_CD_FORCE      = 30
-local LOG_MAX               = 200
+local Setup = Library:Setup({
+    Location = CoreGui,
+    OpenCloseLocation = "Bottom Left" -- Top Right, Bottom Left, Center Left, Etc
+})
 
-local GEM_SHOP_MAP = {
-    ["Lucky Item"]      = "lucky",
-    ["Auto Equip Best"] = "fixed_1",
-    ["Auto Skip"]       = "fixed_2",
-    ["Inventory +500"]  = "fixed_3",
-    ["Scarlet Item"]    = "scarlet",
-}
-
-local BLOCKED_IDS = { LocalCard = true, OwnerVulnone = true }
-
-
--- [ HTTP REQUEST ]
-local req = (syn and syn.request) or (http and http.request)
-         or http_request or request
-
-
--- [ ANTI AFK ]
+-- Prevent player from being idled out
 client.Idled:Connect(function()
-    VirtualUser:CaptureController()
-    VirtualUser:ClickButton2(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-    task.wait(1 + math.random())
+    VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
+    wait(1)
+    VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
 end)
 
+-----------------------------------------------------------------
 
--- [ POPUP BLOCKER HOOK ]
-local gm = getrawmetatable(game)
-setreadonly(gm, false)
-local oldNamecall = gm.__namecall
+local function interval(tag, flag, delayTime, callback)
+    Library:CleanupConnectionsByTag(tag)
+    delayTime = math.max(tonumber(delayTime) or 0.1, 0.05)
+    if not Library.Flags[flag] then
+        return
+    end
 
-gm.__namecall = newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    if not checkcaller() and _G.SSC_DisablePopups then
-        local isMPS = typeof(self) == "Instance"
-                   and (self.ClassName == "MarketplaceService" or self == MPS)
-        if isMPS then
-            if method == "PromptProductPurchase"
-            or method == "PromptGamePassPurchase"
-            or method == "PromptPurchase" then
-                return
+    local last = 0
+    local running = false
+    local slowWarnAt = 0
+    local conn = RunService.Heartbeat:Connect(function()
+        if not Library.Flags[flag] then
+            Library:CleanupConnectionsByTag(tag)
+            return
+        end
+
+        local current = os.clock()
+        if running or current - last < delayTime then
+            return
+        end
+
+        last = current
+        running = true
+
+        local spawnFn = task and task.spawn or spawn
+        spawnFn(function()
+            local startedAt = os.clock()
+            local ok, err = pcall(callback)
+            local elapsed = os.clock() - startedAt
+
+            if not ok then
+                warn("[interval:" .. tostring(tag) .. "]", err)
+            elseif elapsed > 10 and os.clock() - slowWarnAt > 5 then -- 10 is if the interval took longer than 10 seconds to work.
+                slowWarnAt = os.clock()
+                warn(string.format("[Versus] slow interval %s took %.3fs", tostring(tag), elapsed))
             end
+
+            local waitFn = task and task.wait or wait
+            waitFn()
+            running = false
+        end)
+    end)
+
+    Library:TrackConnection(conn, tag)
+end
+
+local function notify(title, desc, style) -- style examples: "info" | "warning" | "danger"
+    Library:createDisplayMessage(title, desc, {
+        { text = "OK" },
+    }, style or "info")
+end
+
+local function prettyPrint(data, indent)
+    indent = indent or 0
+    local prefix = string.rep("    ", indent)
+    if type(data) ~= "table" then
+        print(prefix .. tostring(data))
+        return
+    end
+    for k, v in pairs(data) do
+        if type(v) == "table" then
+            print(prefix .. tostring(k) .. " = {")
+            prettyPrint(v, indent + 1)
+            print(prefix .. "}")
+        else
+            print(prefix .. tostring(k) .. " = " .. tostring(v))
         end
     end
-    return oldNamecall(self, ...)
-end)
-setreadonly(gm, true)
-
-
--- [ LIBRARY ]
-print("[SSC] Loading library...")
-local Library = loadstring(game:HttpGet(LIBRARY_URL))()
-local Setup   = Library:Setup({
-    Location          = CoreGui,
-    OpenCloseLocation = "Bottom Left",
-})
-print("[SSC] Library OK")
-
-
--- [ HELPERS ]
-local function notify(title, desc, style)
-    pcall(function()
-        Library:createDisplayMessage(title, desc, { { text = "OK" } }, style or "info")
-    end)
 end
 
-local logBuffer = {}
-local function logEvent(category, msg)
-    local line = string.format("[%s] [%s] %s", os.date("%H:%M:%S"), category, msg)
-    table.insert(logBuffer, line)
-    if #logBuffer > LOG_MAX then table.remove(logBuffer, 1) end
-    print("[SSC] " .. line)
-end
+----------------------------------------------------------------- https://versusairlines.top/developers.html
 
-local function hwait(a, b)
-    if Library.Flags["HumanizedDelays"] then
-        task.wait(a + (b - a) * math.random())
-    else
-        task.wait(a)
+local RS = ReplicatedStorage
+local CODES_URL = "https://raw.githubusercontent.com/Aditya-lua/Scripts_2/refs/heads/main/SSC_CODES.txt"
+local ROBLOX_THUMBS = "https://thumbnails.roblox.com/v1/assets?assetIds=%s&returnPolicy=PlaceHolder&size=420x420&format=Png&isCircular=false"
+
+local COLLECT_DEFAULT = 3
+local STATS_DELAY_DEFAULT = 15
+local MIN_GEMS_DEFAULT = 100
+local SELL_DEFAULT = "Silver"
+local RARITY_THRESH_DEFAULT = "Mythic"
+local CODE_WAIT = 1.5
+local REBIRTH_CD_NORMAL = 15
+local REBIRTH_CD_FORCE = 30
+
+local PACK_OPEN_MIN_DELAY = 0.12
+local PACK_BUY_MIN_DELAY = 0.18
+local COLLECT_SLOT_WAIT = 0.1
+local INVENTORY_YIELD_EVERY = 50
+
+local function lightYield(index)
+    if (tonumber(index) or 0) % INVENTORY_YIELD_EVERY == 0 then
+        task.wait()
     end
+end
+
+local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+local tableUnpack = table.unpack or unpack
+local webhookUrl = ""
+local webhookPingId = ""
+
+local GEM_SHOP_MAP = {
+    ["Lucky Item"] = "lucky",
+    ["Auto Equip Best"] = "fixed_1",
+    ["Auto Skip"] = "fixed_2",
+    ["Inventory +500"] = "fixed_3",
+    ["Scarlet Item"] = "scarlet",
+}
+
+local function resolvePath(root, ...)
+    local current = root
+    for _, name in ipairs({ ... }) do
+        if not current then return nil end
+        current = current:FindFirstChild(tostring(name))
+    end
+    return current
+end
+
+local function requirePath(label, ...)
+    local module = resolvePath(RS, ...)
+    if not module then
+        warn("[Spin a Soccer Card] Missing module: " .. tostring(label))
+        return nil
+    end
+    return safeRequire(module, label, true)
+end
+
+local Networker = requirePath("Networker", "Source", "Shared", "Networker")
+
+local function getRemote(name)
+    if Networker and type(Networker.get_remote) == "function" then
+        local ok, result = pcall(function()
+            return Networker.get_remote(name)
+        end)
+        if ok and result then return result end
+    end
+
+    local remotesFolder = RS:FindFirstChild("Remotes")
+    return remotesFolder and remotesFolder:FindFirstChild(name) or nil
+end
+
+local function getFunction(name)
+    if Networker and type(Networker.get_remotefunction) == "function" then
+        local ok, result = pcall(function()
+            return Networker.get_remotefunction(name)
+        end)
+        if ok and result then return result end
+    end
+
+    local remotesFolder = RS:FindFirstChild("Remotes")
+    return remotesFolder and remotesFolder:FindFirstChild(name) or nil
+end
+
+local remotes = {
+    OpenPack = getRemote("OpenPack"),
+    BuyPack = getRemote("BuyPack"),
+    EquipCard = getRemote("EquipCard"),
+    CollectSlot = getRemote("CollectSlot"),
+    SellCards = getRemote("SellCards"),
+    DeletePacks = getRemote("DeletePacks"),
+    Rebirth = getRemote("Rebirth"),
+    BuyGemShopItem = getRemote("BuyGemShopItem"),
+    ClaimAllIndexGems = getRemote("ClaimAllIndexGems"),
+    DailyReward = getRemote("DailyReward"),
+    OfflineReward = getRemote("OfflineReward"),
+    SpinWheel = getRemote("SpinWheel"),
+    RedeemCode = getRemote("RedeemCode"),
+    -- Confirmed real names from the RS dump:
+    CraftTrophy = getRemote("CraftTrophy"),
+    ApplyTrophy = getRemote("ApplyTrophy"),
+    DestroyTrophy = getRemote("DestroyTrophy"),
+    Tournament = getRemote("Tournament"),
+    UsePotion = getRemote("UsePotion"),
+    PackSettings = getRemote("PackSettings"),
+    Wish = getRemote("Wish"),
+}
+
+local funcs = {
+    SpinWheelData = getFunction("SpinWheelData"),
+    -- PerformWish is a RemoteFunction in this game!
+    PerformWish = getFunction("PerformWish"),
+}
+
+local PackConfig = requirePath("PackConfig", "Source", "Shared", "Configs", "PackConfig") or {}
+local CardConfig = requirePath("CardConfig", "Source", "Shared", "Configs", "CardConfig") or {}
+local RebirthConfig = requirePath("RebirthConfig", "Source", "Shared", "Configs", "RebirthConfig") or {}
+local PlayerStore = requirePath("PlayerStore", "Source", "Shared", "State", "PlayerStore")
+
+-- Optional configs for the new features (no-op if missing)
+local TrophyConfig = requirePath("TrophyConfig", "Source", "Shared", "Configs", "TrophyConfig") or {}
+local PotionConfig = requirePath("PotionConfig", "Source", "Shared", "Configs", "PotionConfig") or {}
+local TournamentConfig = requirePath("TournamentConfig", "Source", "Shared", "Configs", "TournamentConfig") or {}
+local MutationConfig = requirePath("MutationConfig", "Source", "Shared", "Configs", "MutationConfig") or {}
+
+local stats = {
+    opened = 0,
+    bought = 0,
+    sold = 0,
+    rebirths = 0,
+    gemBuys = 0,
+    collects = 0,
+    codesRedeemed = false,
+    wishes = 0,
+    trophiesCrafted = 0,
+    trophiesApplied = 0,
+    tournamentJoins = 0,
+    potionsUsed = 0,
+    sessionStart = os.time(),
+}
+
+local tournamentState = {
+    inTournament = false,
+    placement = nil,
+    joins = 0,
+    wins = 0,
+}
+
+local function fireRemote(remote, ...)
+    if not remote or type(remote.FireServer) ~= "function" then return false end
+    local args = { ... }
+    local argCount = select("#", ...)
+    local ok = pcall(function()
+        remote:FireServer(tableUnpack(args, 1, argCount))
+    end)
+    return ok
+end
+
+local function invokeRemote(remote, ...)
+    if not remote or type(remote.InvokeServer) ~= "function" then return nil end
+    local args = { ... }
+    local argCount = select("#", ...)
+    local ok, result = pcall(function()
+        return remote:InvokeServer(tableUnpack(args, 1, argCount))
+    end)
+    if ok then return result end
+    return nil
+end
+
+local function getPlayerData()
+    if type(PlayerStore) ~= "function" then return nil end
+    local ok, state = pcall(function()
+        return PlayerStore()
+    end)
+    if not ok or type(state) ~= "table" or type(state.players) ~= "table" then return nil end
+    return state.players[tostring(client.UserId)]
+end
+
+local function getInventory()
+    local data = getPlayerData()
+    return data and data.inventory or {}
+end
+
+local function getSlots()
+    local data = getPlayerData()
+    return data and data.slots or {}
+end
+
+local function getCash()
+    local data = getPlayerData()
+    return tonumber(data and data.cash) or 0
+end
+
+local function getGems()
+    local data = getPlayerData()
+    return tonumber(data and data.gems) or 0
+end
+
+local function getRebirthLevel()
+    local data = getPlayerData()
+    return tonumber(data and data.rebirth) or 0
 end
 
 local function formatCash(n)
     n = tonumber(n) or 0
-    if n >= 1e12 then return string.format("%.2fT", n / 1e12)
-    elseif n >= 1e9 then return string.format("%.2fB", n / 1e9)
-    elseif n >= 1e6 then return string.format("%.2fM", n / 1e6)
-    elseif n >= 1e3 then return string.format("%.1fK", n / 1e3) end
+    if n >= 1e12 then
+        return string.format("%.2fT", n / 1e12)
+    elseif n >= 1e9 then
+        return string.format("%.2fB", n / 1e9)
+    elseif n >= 1e6 then
+        return string.format("%.2fM", n / 1e6)
+    elseif n >= 1e3 then
+        return string.format("%.1fK", n / 1e3)
+    end
     return tostring(math.floor(n))
 end
+
+local function getSingleFlag(flagName, defaultValue)
+    local value = Library.Flags[flagName]
+    if type(value) == "table" then
+        return value[1] or defaultValue
+    end
+    if value == nil or value == "" then
+        return defaultValue
+    end
+    return value
+end
+
+local function getMultiFlag(flagName, defaultValue)
+    local value = Library.Flags[flagName]
+    if type(value) == "table" then
+        local list = {}
+        for _, item in ipairs(value) do
+            table.insert(list, item)
+        end
+        return list
+    end
+    if type(value) == "string" and value ~= "" then
+        return { value }
+    end
+    return defaultValue or {}
+end
+
+local function setDropdownValues(dropdown, flagName, values)
+    values = values or {}
+    Library.Flags[flagName] = values
+
+    pcall(function()
+        if dropdown and type(dropdown.Set) == "function" then
+            dropdown:Set(values)
+        elseif dropdown and type(dropdown.set) == "function" then
+            dropdown:set(values)
+        elseif dropdown and type(dropdown.Update) == "function" then
+            dropdown:Update(values)
+        end
+    end)
+end
+
+local function getPackList()
+    local list = {}
+    local packs = PackConfig and PackConfig.Packs
+    if type(packs) == "table" then
+        for packName, packData in pairs(packs) do
+            if type(packData) ~= "table" or not packData.HideFromShop then
+                table.insert(list, packName)
+            end
+        end
+
+        table.sort(list, function(a, b)
+            local pa = packs[a]
+            local pb = packs[b]
+            local orderA = type(pa) == "table" and (pa.LayoutOrder or 999) or 999
+            local orderB = type(pb) == "table" and (pb.LayoutOrder or 999) or 999
+            return orderA < orderB
+        end)
+    end
+
+    if #list == 0 then
+        list = { "Bronze" }
+    end
+    return list
+end
+
+local rarityOrder = {
+    ["Bronze"] = 1,
+    ["Silver"] = 2,
+    ["Gold"] = 3,
+    ["Legendary"] = 4,
+    ["Mythic"] = 5,
+    ["Azure Zenith"] = 6,
+    ["Crimson Zenith"] = 7,
+    ["Divine"] = 8,
+    ["Primordial"] = 9,
+    ["Oblivion"] = 10,
+    ["Eternity"] = 11,
+    ["Astral"] = 12,
+    ["Sovereign"] = 13,
+    ["Vandal"] = 14,
+    ["The Monarch"] = 15,
+    ["Tyrant"] = 16,
+    ["Verdant"] = 17,
+    ["Silvane"] = 18,
+    ["Lunar"] = 19,
+    ["Solar"] = 20,
+    ["Nether"] = 21,
+    ["Aether"] = 22,
+    ["Player of the Month"] = 23,
+    ["Exclusive"] = 24,
+    ["Secret Exclusive"] = 25,
+}
+
+local rarityList = {}
+for rarityName in pairs(rarityOrder) do
+    table.insert(rarityList, rarityName)
+end
+table.sort(rarityList, function(a, b)
+    return (rarityOrder[a] or 99) < (rarityOrder[b] or 99)
+end)
+
+local function getRarityLevel(rarity)
+    return rarityOrder[rarity] or 0
+end
+
+-- =============================================
+-- TROPHY HELPERS
+-- =============================================
+local trophyDefs = {}      -- list of { name, rarity, lvl }
+local trophyLabels = {}    -- "Golden Boot [Legendary]"
+local trophyLabelToName = {}
+do
+    local source = (TrophyConfig and TrophyConfig.Trophies) or TrophyConfig or {}
+    for name, data in pairs(source) do
+        if type(data) == "table" and (data.DisplayName or data.Rarity or data.Requirements or data.Stars) then
+            local rarity = data.Rarity or "?"
+            table.insert(trophyDefs, { name = name, rarity = rarity, lvl = rarityOrder[rarity] or 0 })
+        end
+    end
+    table.sort(trophyDefs, function(a, b)
+        if a.lvl ~= b.lvl then return a.lvl > b.lvl end
+        return a.name < b.name
+    end)
+    for _, t in ipairs(trophyDefs) do
+        local label = t.name .. " [" .. t.rarity .. "]"
+        table.insert(trophyLabels, label)
+        trophyLabelToName[label] = t.name
+    end
+    if #trophyLabels == 0 then
+        trophyLabels = { "Golden Boot", "Champions League", "Ballon d'Or", "Eternal Crown", "Immortal Chalice" }
+        for _, n in ipairs(trophyLabels) do trophyLabelToName[n] = n end
+    end
+end
+
+-- =============================================
+-- POTION HELPERS
+-- =============================================
+local potionList = {}
+do
+    local source = (PotionConfig and PotionConfig.Potions) or {}
+    for name in pairs(source) do
+        table.insert(potionList, name)
+    end
+    table.sort(potionList)
+    if #potionList == 0 then
+        potionList = {
+            "Snowstorm Potion", "Thunderstorm Potion",
+            "Toxic Rain Potion", "Blood Moon Potion", "Solar Eclipse Potion",
+        }
+    end
+end
+
+-- =============================================
+-- MUTATION HELPERS (mutation count → income multiplier)
+-- =============================================
+local function getCardMutations(card)
+    if type(card) ~= "table" then return {} end
+    -- Common shape variants we've seen
+    if type(card.mutations) == "table" then return card.mutations end
+    if type(card.Mutations) == "table" then return card.Mutations end
+    if type(card.mutation) == "string" then return { card.mutation } end
+    return {}
+end
+
+local function getMutationMultiplier(card)
+    if not Library.Flags["MutationAwareEquip"] then return 1 end
+    local muts = getCardMutations(card)
+    local count = #muts
+    if count == 0 then return 1 end
+    -- Conservative: each mutation adds ~75% (configurable in MutationConfig if present)
+    local per = 1.75
+    if MutationConfig and type(MutationConfig.MultiplierPerMutation) == "number" then
+        per = MutationConfig.MultiplierPerMutation
+    end
+    local mult = 1
+    for _ = 1, count do mult = mult * per end
+    return mult
+end
+
+local function getCardScore(card)
+    if type(card) ~= "table" or not card.id then return 0 end
+    local cfg = CardConfig and CardConfig.Cards and CardConfig.Cards[card.id]
+    local baseIncome = (type(cfg) == "table" and tonumber(cfg.IncomeRate)) or 0
+    return baseIncome * getMutationMultiplier(card)
+end
+
+local function canRebirth()
+    local maxRebirth = 999
+    if RebirthConfig and type(RebirthConfig.GetMaxRebirth) == "function" then
+        local ok, result = pcall(function()
+            return RebirthConfig.GetMaxRebirth()
+        end)
+        if ok and tonumber(result) then
+            maxRebirth = tonumber(result)
+        end
+    end
+
+    local playerData = getPlayerData()
+    if type(playerData) ~= "table" then return false end
+
+    local currentRebirth = tonumber(playerData.rebirth) or 0
+    if currentRebirth >= maxRebirth then return false end
+
+    local rebirthData = nil
+    if RebirthConfig and type(RebirthConfig.GetRebirth) == "function" then
+        local ok, result = pcall(function()
+            return RebirthConfig.GetRebirth(currentRebirth + 1)
+        end)
+        if ok then rebirthData = result end
+    end
+    if type(rebirthData) ~= "table" then return false end
+
+    local cashRequired = tonumber(rebirthData.CashRequired) or math.huge
+    local gemsRequired = tonumber(rebirthData.GemsRequired) or 0
+    return (tonumber(playerData.cash) or 0) >= cashRequired and (tonumber(playerData.gems) or 0) >= gemsRequired
+end
+
+local SlotController = nil
+local function equipBest()
+    if not SlotController then
+        SlotController = requirePath("SlotController", "Source", "Client", "Controllers", "SlotController")
+    end
+
+    if SlotController and type(SlotController.equipBestCards) == "function" then
+        local ok = pcall(SlotController.equipBestCards)
+        if ok then return true end
+    end
+
+    if not remotes.EquipCard then return false end
+
+    local inventory = getInventory()
+    local slots = getSlots()
+    if type(inventory) ~= "table" or type(slots) ~= "table" then return false end
+
+    local blockedIds = { LocalCard = true, OwnerVulnone = true }
+    local candidates = {}
+    local cards = CardConfig and CardConfig.Cards or {}
+
+    local scannedCards = 0
+    for _, card in pairs(inventory) do
+        scannedCards += 1
+        lightYield(scannedCards)
+
+        local isValid = type(card) == "table"
+        and card.id
+        and card.uuid
+        and not blockedIds[card.id]
+        and not card.throneCard
+        and not card.locked
+
+        if isValid then
+            table.insert(candidates, {
+                uuid = card.uuid,
+                income = getCardScore(card),
+            })
+        end
+    end
+
+    table.sort(candidates, function(a, b)
+        return a.income > b.income
+    end)
+
+    local slotCount = 0
+    for _ in pairs(slots) do
+        slotCount += 1
+    end
+    if slotCount == 0 then slotCount = 6 end
+
+    local equippedCount = 0
+    for slotIndex = 1, math.min(#candidates, slotCount) do
+        local candidate = candidates[slotIndex]
+        local currentSlot = slots[tostring(slotIndex)] or slots[slotIndex]
+        local currentIncome = 0
+
+        if type(currentSlot) == "table" and type(currentSlot.card) == "table" then
+            currentIncome = getCardScore(currentSlot.card)
+        end
+
+        if candidate.income > currentIncome and fireRemote(remotes.EquipCard, candidate.uuid, slotIndex) then
+            equippedCount += 1
+            task.wait(0.15)
+        end
+    end
+
+    return equippedCount > 0
+end
+
+local function destroyRollUIs()
+    pcall(function()
+        local playerGui = client:FindFirstChild("PlayerGui")
+        if not playerGui then return end
+
+        local children = playerGui:GetChildren()
+        local container = children[65]
+        if not container then return end
+
+        local frame = container:FindFirstChild("Frame")
+        if not frame then return end
+
+        local buttons = frame:FindFirstChild("ButtonsContainer")
+        if not buttons then return end
+
+        local autoSkip = buttons:FindFirstChild("AutoSkip")
+        local autoOpen = buttons:FindFirstChild("AutoOpen")
+
+        if autoSkip then autoSkip:Destroy() end
+        if autoOpen then autoOpen:Destroy() end
+    end)
+end
+
+local function dispatchWebhook(payload)
+    if webhookUrl == "" or not httpRequest then return end
+
+    if webhookPingId ~= "" then
+        payload.content = "<@" .. webhookPingId .. ">"
+    end
+
+    pcall(function()
+        httpRequest({
+            Url = webhookUrl,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = HttpService:JSONEncode(payload),
+        })
+    end)
+end
+
+local globals = (getgenv and getgenv()) or _G
+globals.DisablePopups = globals.DisablePopups or false
+local function syncUiSuppressFlags()
+    globals.DisablePopups = Library.Flags["DisablePopups"] == true
+end
+
+local function installPopupBlocker()
+    if type(globals) ~= "table" or globals.VersusSSC_PopupHooked then return end
+    if not (getrawmetatable and setreadonly and newcclosure and getnamecallmethod and checkcaller) then return end
+
+    local ok = pcall(function()
+        local gameMeta = getrawmetatable(game)
+        local oldNamecall = gameMeta.__namecall
+        setreadonly(gameMeta, false)
+
+        gameMeta.__namecall = newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            local shouldBlock = globals.DisablePopups == true
+            local isMarketplace = typeof(self) == "Instance" and (self == MarketplaceService or self.ClassName == "MarketplaceService")
+
+            if shouldBlock and not checkcaller() and isMarketplace then
+                if method == "PromptProductPurchase" or method == "PromptGamePassPurchase" or method == "PromptPurchase" then
+                    return nil
+                end
+            end
+
+            return oldNamecall(self, ...)
+        end)
+
+        setreadonly(gameMeta, true)
+        globals.VersusSSC_PopupHooked = true
+    end)
+
+    if not ok then
+        pcall(function()
+            setreadonly(getrawmetatable(game), true)
+        end)
+    end
+end
+
+installPopupBlocker()
+
+if remotes.OpenPack and remotes.OpenPack.OnClientEvent then
+    local conn = remotes.OpenPack.OnClientEvent:Connect(function(img, cData, _color, _uuid, _chances, isNew, pName)
+        destroyRollUIs()
+
+        if img == "x" or type(cData) ~= "table" then return end
+        if not Library.Flags["WebhookRareRolls"] then return end
+
+        local threshName = getSingleFlag("WebhookRarityThresh", RARITY_THRESH_DEFAULT)
+        local cardLevel = getRarityLevel(cData.Rarity or "Common")
+        if cardLevel < getRarityLevel(threshName) then return end
+
+        local thumbnailUrl = ""
+        local imageId = string.match(tostring(cData.ImageId or ""), "%d+")
+        if imageId and httpRequest then
+            pcall(function()
+                local thumbResponse = httpRequest({
+                    Url = string.format(ROBLOX_THUMBS, imageId),
+                    Method = "GET",
+                })
+
+                if thumbResponse and thumbResponse.Body then
+                    local parsed = HttpService:JSONDecode(thumbResponse.Body)
+                    if parsed.data and parsed.data[1] and parsed.data[1].imageUrl then
+                        thumbnailUrl = parsed.data[1].imageUrl
+                    end
+                end
+            end)
+        end
+
+        local cards = CardConfig and CardConfig.Cards or {}
+        local cardCfg = cards[cData.id]
+        local income = tonumber(cData.IncomeRate) or 0
+        if type(cardCfg) == "table" then
+            income = tonumber(cardCfg.IncomeRate) or income
+        end
+
+        dispatchWebhook({
+            embeds = {{
+                    title = "🎉 Rare Card Rolled!",
+                    description = "You just unboxed a high-tier card!",
+                    color = 16766720,
+                    thumbnail = { url = thumbnailUrl },
+                    fields = {
+                        { name = "🎴 Card Name", value = tostring(cData.DisplayName or cData.Name or "Unknown"), inline = false },
+                        { name = "⭐ Rarity", value = tostring(cData.Rarity or "Unknown"), inline = false },
+                        { name = "📦 Pack", value = tostring(pName or "Unknown"), inline = false },
+                        { name = "💸 Income", value = "$" .. formatCash(income) .. "/s", inline = false },
+                        { name = "✨ New Discovery", value = isNew and "Yes" or "No", inline = false },
+                        { name = "🧑 Player", value = "||" .. client.Name .. "||", inline = false },
+                    },
+                    footer = { text = "SSC Elite Farm • " .. os.date("%H:%M:%S") },
+                }}
+        })
+    end)
+
+    if type(Library.TrackConnection) == "function" then
+        pcall(function()
+            Library:TrackConnection(conn, "SSC_RareRollWebhook")
+        end)
+    end
+end
+
+local packList = getPackList()
+local openPackIndex = 1
+local buyPackIndex = 1
+
+local TabFarm    = Setup:CreateSection("⚔️ Farm & Packs")
+local TabPassive = Setup:CreateSection("💎 Passives & Rebirth")
+local TabExtras  = Setup:CreateSection("🏆 Trophies & Wish")
+local TabTourney = Setup:CreateSection("🥇 Tournament")
+local TabPotion  = Setup:CreateSection("🧪 Potions")
+local TabWebhook = Setup:CreateSection("📡 Webhooks")
+local TabMisc    = Setup:CreateSection("🔧 Misc & Settings")
+local TabStats   = Setup:CreateSection("📊 Analytics")
+
+TabFarm:createLabel({ Name = "Paid Contributor: aditya44325f", Special = true })
+
+TabFarm:createLabel({ Name = "Plot Automation", Special = true })
+TabFarm:createToggle({
+    Name = "Auto Collect Cash",
+    flagName = "AutoCollect",
+    Flag = false,
+    Description = "Collects cash from every active card slot.",
+    Callback = function() end,
+})
+
+TabFarm:createSlider({
+    Name = "Collect Delay (Seconds)",
+    flagName = "CollectDelay",
+    value = COLLECT_DEFAULT,
+    minValue = 1,
+    maxValue = 60,
+    Description = "How often to collect cash from slots.",
+    Callback = function() end,
+})
+
+TabFarm:createToggle({
+    Name = "Auto Equip Best Cards",
+    flagName = "AutoEquip",
+    Flag = false,
+    Description = "Equips the highest income cards into your slots.",
+    Callback = function() end,
+})
+
+TabFarm:createToggle({
+    Name = "🧬 Mutation-Aware Equip",
+    flagName = "MutationAwareEquip",
+    Flag = true,
+    Description = "Score cards by IncomeRate × mutation multiplier (a mutated Bronze can beat unmutated Mythical).",
+    Callback = function() end,
+})
+
+TabFarm:createToggle({
+    Name = "Auto Sell Cards",
+    flagName = "AutoSell",
+    Flag = false,
+    Description = "Sells cards below the selected rarity threshold.",
+    Callback = function() end,
+})
+
+TabFarm:createDropdown({
+    Name = "Sell Below Rarity",
+    flagName = "SellThreshold",
+    Flag = { SELL_DEFAULT },
+    List = rarityList,
+    multi = false,
+    Description = "Cards under this rarity will be sold.",
+    Callback = function() end,
+})
+
+TabFarm:createToggle({
+    Name = "🛡️ Never Sell Mutated",
+    flagName = "NeverSellMutated",
+    Flag = true,
+    Description = "Protects ANY card with ≥1 mutation regardless of rarity threshold.",
+    Callback = function() end,
+})
+
+TabFarm:createLabel({ Name = "Pack Automation", Special = true })
+TabFarm:createToggle({
+    Name = "Auto Open Packs",
+    flagName = "AutoOpenPacks",
+    Flag = false,
+    Description = "Opens selected packs from your inventory.",
+    Callback = function() end,
+})
+
+local packDropdown = TabFarm:createDropdown({
+    Name = "Select Packs to Open",
+    flagName = "SelectedPacks",
+    Flag = { packList[1] },
+    List = packList,
+    multi = true,
+    Description = "Cycles through all selected packs.",
+    Callback = function() end,
+})
+
+TabFarm:createButton({
+    Name = "Select All Packs to Open",
+    Description = "Adds every visible pack to the open list.",
+    Callback = function()
+        setDropdownValues(packDropdown, "SelectedPacks", packList)
+        openPackIndex = 1
+    end,
+})
+
+TabFarm:createSlider({
+    Name = "Open Pack Delay",
+    flagName = "PackDelay",
+    value = PACK_OPEN_MIN_DELAY,
+    minValue = 0.05,
+    maxValue = 5,
+    Description = "Delay between pack opens. Lower values are clamped slightly to protect FPS.",
+    Callback = function() end,
+})
+
+TabFarm:createLabel({ Name = "Shop Automation", Special = true })
+TabFarm:createToggle({
+    Name = "Auto Buy Shop Packs",
+    flagName = "AutoBuyPacks",
+    Flag = false,
+    Description = "Buys selected shop packs when affordable.",
+    Callback = function() end,
+})
+
+local buyPackDropdown = TabFarm:createDropdown({
+    Name = "Select Packs to Buy",
+    flagName = "SelectedBuyPacks",
+    Flag = { packList[1] },
+    List = packList,
+    multi = true,
+    Description = "Cycles through all selected shop packs.",
+    Callback = function() end,
+})
+
+TabFarm:createButton({
+    Name = "Select All Shop Packs",
+    Description = "Adds every visible pack to the buy list.",
+    Callback = function()
+        setDropdownValues(buyPackDropdown, "SelectedBuyPacks", packList)
+        buyPackIndex = 1
+    end,
+})
+
+TabFarm:createSlider({
+    Name = "Buy Pack Delay",
+    flagName = "BuyDelay",
+    value = PACK_BUY_MIN_DELAY,
+    minValue = 0.05,
+    maxValue = 900,
+    Description = "Delay between pack purchases. Lower values are clamped slightly to protect FPS.",
+    Callback = function() end,
+})
+
+TabFarm:createToggle({
+    Name = "Auto Buy Gem Shop",
+    flagName = "AutoGemShop",
+    Flag = false,
+    Description = "Buys the selected gem shop item when you have enough gems.",
+    Callback = function() end,
+})
+
+TabFarm:createDropdown({
+    Name = "Gem Shop Item",
+    flagName = "GemShopItemUI",
+    Flag = { "Lucky Item" },
+    List = { "Lucky Item", "Auto Equip Best", "Auto Skip", "Inventory +500", "Scarlet Item" },
+    multi = false,
+    Description = "The gem shop item to buy.",
+    Callback = function() end,
+})
+
+TabFarm:createSlider({
+    Name = "Minimum Gems to Keep",
+    flagName = "MinGems",
+    value = MIN_GEMS_DEFAULT,
+    minValue = 0,
+    maxValue = 10000,
+    Description = "Gem shop buys only run above this gem amount.",
+    Callback = function() end,
+})
+
+TabFarm:createLabel({ Name = "Inventory Cleanup", Special = true })
+TabFarm:createToggle({
+    Name = "Auto Delete Packs",
+    flagName = "AutoDeletePacks",
+    Flag = false,
+    Description = "Deletes selected pack types from your inventory.",
+    Callback = function() end,
+})
+
+TabFarm:createDropdown({
+    Name = "Packs to Delete",
+    flagName = "DeletePacksList",
+    Flag = { packList[1] },
+    List = packList,
+    multi = true,
+    Description = "Selected packs are permanently deleted.",
+    Warning = function() return "Deleted packs cannot be recovered." end,
+    WarnIf = function() return Library.Flags["AutoDeletePacks"] == true end,
+    Callback = function() end,
+})
+
+TabPassive:createLabel({ Name = "Rewards", Special = true })
+TabPassive:createToggle({ Name = "Auto Claim Index Gems", flagName = "AutoIndex", Flag = false, Description = "Claims all index gems.", Callback = function() end })
+TabPassive:createToggle({ Name = "Auto Spin Wheel", flagName = "AutoSpin", Flag = false, Description = "Claims free spins and spins available wheel spins.", Callback = function() end })
+TabPassive:createToggle({ Name = "Auto Daily Rewards", flagName = "AutoDaily", Flag = false, Description = "Claims daily rewards.", Callback = function() end })
+TabPassive:createToggle({ Name = "Auto Offline Rewards", flagName = "AutoOffline", Flag = false, Description = "Claims offline rewards.", Callback = function() end })
+
+TabPassive:createLabel({ Name = "Progression", Special = true })
+TabPassive:createToggle({ Name = "Auto Redeem All Codes", flagName = "AutoRedeemCodes", Flag = false, Description = "Fetches and redeems known codes once per session.", Callback = function() end })
+TabPassive:createToggle({ Name = "Auto Rebirth", flagName = "AutoRebirth", Flag = false, Description = "Rebirths when the requirements are met.", Callback = function() end })
+TabPassive:createToggle({
+    Name = "Force Rebirth",
+    flagName = "ForceRebirth",
+    Flag = false,
+    Description = "Fires the rebirth remote without the local requirement check.",
+    Warning = function() return "This can fire before you meet the rebirth requirements." end,
+    WarnIf = function() return Library.Flags["ForceRebirth"] == true end,
+    Callback = function() end,
+})
+
+TabWebhook:createLabel({ Name = "Discord Integration", Special = true })
+TabWebhook:createInputBox({
+    Name = "Webhook URL",
+    flagName = "WebhookURL",
+    Flag = "",
+    Description = "Discord webhook URL for rare rolls and stats.",
+    Callback = function(value)
+        webhookUrl = tostring(value or "")
+    end,
+})
+
+TabWebhook:createInputBox({
+    Name = "Discord User ID",
+    flagName = "WebhookPingID",
+    Flag = "",
+    Description = "Optional user ID to ping on webhook posts.",
+    Callback = function(value)
+        webhookPingId = tostring(value or ""):gsub("[^%d]", "")
+    end,
+})
+
+TabWebhook:createLabel({ Name = "Rare Card Tracker", Special = true })
+TabWebhook:createToggle({ Name = "Enable Rare Roll Webhook", flagName = "WebhookRareRolls", Flag = false, Description = "Sends a webhook for cards at or above the selected rarity.", Callback = function() end })
+TabWebhook:createDropdown({ Name = "Minimum Rarity to Log", flagName = "WebhookRarityThresh", Flag = { RARITY_THRESH_DEFAULT }, List = rarityList, multi = false, Description = "Minimum rarity for rare-roll webhook posts.", Callback = function() end })
+
+TabWebhook:createLabel({ Name = "Automated Analytics", Special = true })
+TabWebhook:createToggle({ Name = "Enable Stats Webhook", flagName = "WebhookStats", Flag = false, Description = "Sends session stats to your webhook.", Callback = function() end })
+TabWebhook:createSlider({ Name = "Stats Frequency (Minutes)", flagName = "WebhookStatsDelay", value = STATS_DELAY_DEFAULT, minValue = 1, maxValue = 60, Description = "Minutes between stats webhook posts.", Callback = function() end })
+TabWebhook:createButton({
+    Name = "Send Test Webhook",
+    Description = "Checks if the webhook URL works.",
+    Callback = function()
+        if webhookUrl == "" then
+            notify("Webhook", "No webhook URL set.", "warning")
+            return
+        end
+
+        dispatchWebhook({
+            embeds = {{
+                    title = "🔔 Test Webhook",
+                    description = "Spin a Soccer Card webhook is working correctly.",
+                    color = 5763719,
+                    footer = { text = "Spin a Soccer Card • " .. client.Name },
+                }}
+        })
+        notify("Webhook", "Test sent.", "info")
+    end,
+})
+
+TabMisc:createLabel({ Name = "Native Pack Settings", Special = true })
+TabMisc:createToggle({
+    Name = "🎬 Hide Pack Animation (Native)",
+    flagName = "PackHideAnim",
+    Flag = false,
+    Description = "Fires PackSettings('packHideAnimation', true). Server-side — no client hacks, no blur.",
+    Callback = function() end,
+})
+
+TabMisc:createLabel({ Name = "Game UI", Special = true })
+TabMisc:createToggle({ Name = "Disable Game Popups", flagName = "DisablePopups", Flag = false, Description = "Blocks shop/rebirth prompts and hides known prompt GUIs.", Callback = function() end })
+TabMisc:createToggle({ Name = "Disable Game Notifications", flagName = "DisableNotifs", Flag = false, Description = "Hides the in-game notification stack.", Callback = function() end })
+TabMisc:createToggle({
+    Name = "Hide Game HUD",
+    flagName = "HideHUD",
+    Flag = false,
+    Description = "Toggles the game's HUD ScreenGui.",
+    Callback = function(value)
+        local playerGui = client:FindFirstChild("PlayerGui")
+        local hud = playerGui and playerGui:FindFirstChild("HUD")
+        if hud then
+            hud.Enabled = not value
+        end
+    end,
+})
+
+TabMisc:createButton({
+    Name = "Bug Report",
+    Description = "Opens the Versus bug reporter.",
+    Callback = function()
+        pcall(function()
+            Library:PromptBugReport()
+        end)
+    end,
+})
+
+-- =============================================
+-- 🏆 EXTRAS — Wishing + Trophies
+-- =============================================
+TabExtras:createLabel({ Name = "✨ Wishing", Special = true })
+TabExtras:createLabel({ Name = "PerformWish is a RemoteFunction — invokes every 5s." })
+
+TabExtras:createToggle({
+    Name = "Auto Perform Wish",
+    flagName = "AutoWish",
+    Flag = false,
+    Description = "Invokes PerformWish every 5 seconds.",
+    Callback = function() end,
+})
+
+TabExtras:createButton({
+    Name = "✨ Perform Wish Now",
+    Description = "One-shot wish.",
+    Callback = function()
+        if not funcs.PerformWish then notify("Wish", "PerformWish remote missing.", "warning") return end
+        pcall(function() funcs.PerformWish:InvokeServer() end)
+        stats.wishes += 1
+        notify("Wish", "Wish fired.", "info")
+    end,
+})
+
+TabExtras:createLabel({ Name = "🏆 Trophies", Special = true })
+
+TabExtras:createToggle({
+    Name = "Auto Craft Selected Trophies",
+    flagName = "AutoCraftTrophy",
+    Flag = false,
+    Description = "Calls CraftTrophy(name) for each selected trophy every 15s.",
+    Callback = function() end,
+})
+
+TabExtras:createDropdown({
+    Name = "Trophies to Craft",
+    flagName = "CraftTrophyList",
+    Flag = { trophyLabels[1] },
+    List = trophyLabels,
+    multi = true,
+    Description = "Sorted by rarity (highest first). Multi-select.",
+    Callback = function() end,
+})
+
+TabExtras:createButton({
+    Name = "🛠️ Craft Selected Now",
+    Description = "One-shot craft for each selected trophy.",
+    Callback = function()
+        if not remotes.CraftTrophy then notify("Trophy", "CraftTrophy missing.", "warning") return end
+        local selected = getMultiFlag("CraftTrophyList", {})
+        if #selected == 0 then notify("Trophy", "No trophies selected.", "warning") return end
+        for _, label in ipairs(selected) do
+            local name = trophyLabelToName[label] or label
+            fireRemote(remotes.CraftTrophy, name)
+            stats.trophiesCrafted += 1
+        end
+        notify("Trophy", "Fired " .. #selected .. " craft attempts.", "info")
+    end,
+})
+
+TabExtras:createToggle({
+    Name = "Auto Apply Trophies to Best Plots",
+    flagName = "AutoApplyTrophy",
+    Flag = false,
+    Description = "Pairs highest-tier trophy with highest-EPS plot. ApplyTrophy(name, plot).",
+    Callback = function() end,
+})
+
+
+-- =============================================
+-- 🥇 TOURNAMENT
+-- =============================================
+TabTourney:createLabel({ Name = "Auto Tournament", Special = true })
+TabTourney:createLabel({ Name = "Uses Tournament('join') and Tournament('equip_best')." })
+
+TabTourney:createToggle({
+    Name = "Auto Join Tournament",
+    flagName = "AutoJoinTournament",
+    Flag = false,
+    Description = "Joins every 15s when not already in a tournament.",
+    Callback = function() end,
+})
+
+TabTourney:createToggle({
+    Name = "Auto Equip Best Team",
+    flagName = "AutoEquipBestTourney",
+    Flag = false,
+    Description = "Server-side: fires Tournament('equip_best') every 30s.",
+    Callback = function() end,
+})
+
+TabTourney:createButton({
+    Name = "🥇 Join Now",
+    Callback = function()
+        if not remotes.Tournament then notify("Tournament", "Remote missing.", "warning") return end
+        fireRemote(remotes.Tournament, "join")
+        tournamentState.joins += 1
+        tournamentState.inTournament = true
+        notify("Tournament", "Joined.", "info")
+    end,
+})
+
+TabTourney:createButton({
+    Name = "⚡ Equip Best Now",
+    Callback = function()
+        if not remotes.Tournament then notify("Tournament", "Remote missing.", "warning") return end
+        fireRemote(remotes.Tournament, "equip_best")
+        notify("Tournament", "Equip best fired.", "info")
+    end,
+})
+
+TabTourney:createToggle({
+    Name = "Webhook on Tournament Finish",
+    flagName = "WebhookTournament",
+    Flag = false,
+    Description = "Discord embed when a tournament ends.",
+    Callback = function() end,
+})
+
+local labelTourneyState  = TabTourney:createLabel({ Name = "Status: ⚪ idle" })
+local labelTourneyJoins  = TabTourney:createLabel({ Name = "Joined: 0" })
+local labelTourneyWins   = TabTourney:createLabel({ Name = "Top-3 finishes: 0" })
+
+
+-- =============================================
+-- 🧪 POTIONS
+-- =============================================
+TabPotion:createLabel({ Name = "Weather Potions", Special = true })
+TabPotion:createLabel({ Name = "Forces a weather event for 300s. UsePotion(name)." })
+
+TabPotion:createToggle({
+    Name = "Auto Use Potion",
+    flagName = "AutoUsePotion",
+    Flag = false,
+    Description = "Uses selected potion every 300s (matches in-game cooldown).",
+    Callback = function() end,
+})
+
+TabPotion:createDropdown({
+    Name = "Potion",
+    flagName = "PotionType",
+    Flag = { potionList[1] },
+    List = potionList,
+    multi = false,
+    Callback = function() end,
+})
+
+TabPotion:createButton({
+    Name = "🧪 Use Potion Now",
+    Callback = function()
+        if not remotes.UsePotion then notify("Potion", "UsePotion remote missing.", "warning") return end
+        local p = getSingleFlag("PotionType", potionList[1])
+        if not p or p == "" then notify("Potion", "No potion selected.", "warning") return end
+        fireRemote(remotes.UsePotion, p)
+        stats.potionsUsed += 1
+        notify("Potion", "Used " .. tostring(p), "info")
+    end,
+})
+
+
+-- =============================================
+-- 📊 STATS
+-- =============================================
+TabStats:createLabel({ Name = "Live Session Analytics", Special = true })
+local labelCash = TabStats:createLabel({ Name = "💰 Cash: $0" })
+local labelGems = TabStats:createLabel({ Name = "💎 Gems: 0" })
+local labelRebirth = TabStats:createLabel({ Name = "🌟 Rebirth Level: 0" })
+local labelOpened = TabStats:createLabel({ Name = "📦 Packs Opened: 0" })
+local labelBought = TabStats:createLabel({ Name = "🛒 Packs Bought: 0" })
+local labelSold = TabStats:createLabel({ Name = "💸 Cards Sold: 0" })
+local labelCollects = TabStats:createLabel({ Name = "💵 Collects: 0" })
+local labelGemBuys = TabStats:createLabel({ Name = "💎 Gem Buys: 0" })
+local labelSessionRebirths = TabStats:createLabel({ Name = "🔄 Session Rebirths: 0" })
+local labelWishes = TabStats:createLabel({ Name = "✨ Wishes: 0" })
+local labelTrophies = TabStats:createLabel({ Name = "🏆 Trophies Crafted: 0" })
+local labelPotions = TabStats:createLabel({ Name = "🧪 Potions Used: 0" })
+local labelUptime = TabStats:createLabel({ Name = "⏱️ Uptime: 00:00:00" })
+
+TabStats:createButton({
+    Name = "🔄 Reset Stats",
+    Description = "Resets session counters.",
+    Callback = function()
+        stats = {
+            opened = 0, bought = 0, sold = 0, rebirths = 0,
+            gemBuys = 0, collects = 0, codesRedeemed = true,
+            wishes = 0, trophiesCrafted = 0, trophiesApplied = 0,
+            tournamentJoins = 0, potionsUsed = 0,
+            sessionStart = os.time(),
+        }
+        tournamentState = { inTournament = false, placement = nil, joins = 0, wins = 0 }
+        notify("Stats", "Session stats have been reset.", "info")
+    end,
+})
+
+interval("AutoOpenPacks", "AutoOpenPacks", function()
+    return math.max(tonumber(Library.Flags["PackDelay"]) or PACK_OPEN_MIN_DELAY, PACK_OPEN_MIN_DELAY)
+end, function()
+    if not remotes.OpenPack then return end
+
+    local selected = getMultiFlag("SelectedPacks", { packList[1] })
+    if #selected == 0 then return end
+    if openPackIndex > #selected then openPackIndex = 1 end
+
+    local packName = selected[openPackIndex]
+    openPackIndex += 1
+
+    local playerData = getPlayerData()
+    local hasPack = type(playerData) == "table"
+    and type(playerData.packs) == "table"
+    and (tonumber(playerData.packs[packName]) or 0) > 0
+
+    if hasPack and fireRemote(remotes.OpenPack, packName) then
+        stats.opened += 1
+        task.wait(PACK_OPEN_MIN_DELAY)
+    else
+        task.wait(0.03)
+    end
+end, { persistent = true, minDelay = PACK_OPEN_MIN_DELAY })
+
+interval("AutoBuyPacks", "AutoBuyPacks", function()
+    return math.max(tonumber(Library.Flags["BuyDelay"]) or PACK_BUY_MIN_DELAY, PACK_BUY_MIN_DELAY)
+end, function()
+    if not remotes.BuyPack then return end
+
+    local selected = getMultiFlag("SelectedBuyPacks", { packList[1] })
+    if #selected == 0 then return end
+    if buyPackIndex > #selected then buyPackIndex = 1 end
+
+    local packName = selected[buyPackIndex]
+    buyPackIndex += 1
+
+    local packs = PackConfig and PackConfig.Packs or {}
+    local packData = packs[packName]
+    local packPrice = 0
+    if type(packData) == "table" then
+        packPrice = tonumber(packData.Price) or 0
+    end
+
+    if packPrice > 0 and getCash() >= packPrice and fireRemote(remotes.BuyPack, packName) then
+        stats.bought += 1
+        task.wait(PACK_BUY_MIN_DELAY)
+    else
+        task.wait(0.03)
+    end
+end, { persistent = true, minDelay = PACK_BUY_MIN_DELAY })
+
+interval("AutoCollect", "AutoCollect", function()
+    return tonumber(Library.Flags["CollectDelay"]) or COLLECT_DEFAULT
+end, function()
+    if not remotes.CollectSlot then return end
+
+    for slotIndex, slotData in pairs(getSlots()) do
+        if type(slotData) == "table" and slotData.card then
+            if fireRemote(remotes.CollectSlot, tonumber(slotIndex) or slotIndex) then
+                stats.collects += 1
+            end
+            task.wait(COLLECT_SLOT_WAIT)
+        end
+    end
+end, { persistent = true })
+
+interval("AutoSell", "AutoSell", 8, function()
+    if not remotes.SellCards then return end
+
+    local thresholdName = getSingleFlag("SellThreshold", SELL_DEFAULT)
+    local thresholdLevel = getRarityLevel(thresholdName)
+    local blockedIds = { LocalCard = true, OwnerVulnone = true }
+    local cards = CardConfig and CardConfig.Cards or {}
+    local toSell = {}
+
+    local scannedCards = 0
+    for _, card in pairs(getInventory()) do
+        scannedCards += 1
+        lightYield(scannedCards)
+
+        local isEligible = type(card) == "table"
+        and card.id
+        and card.uuid
+        and not card.throneCard
+        and not card.locked
+        and not blockedIds[card.id]
+
+        if isEligible then
+            -- Protect mutated cards if the toggle is on
+            local mutCount = #getCardMutations(card)
+            local isMutated = mutCount > 0
+            if Library.Flags["NeverSellMutated"] and isMutated then
+                -- skip
+            else
+                local cfg = cards[card.id]
+                local cardLevel = getRarityLevel(type(cfg) == "table" and cfg.Rarity or nil)
+                if cardLevel < thresholdLevel then
+                    table.insert(toSell, card.uuid)
+                end
+            end
+        end
+    end
+
+    if #toSell > 0 and fireRemote(remotes.SellCards, toSell) then
+        stats.sold += #toSell
+        task.wait(0.2)
+    end
+end, { persistent = true })
+
+interval("AutoDeletePacks", "AutoDeletePacks", 10, function()
+    local selected = getMultiFlag("DeletePacksList", {})
+    if #selected > 0 then
+        fireRemote(remotes.DeletePacks, selected)
+    end
+end, { persistent = true })
+
+interval("AutoEquip", "AutoEquip", 8, function()
+    equipBest()
+end, { persistent = true })
+
+interval("AutoGemShop", "AutoGemShop", 10, function()
+    if not remotes.BuyGemShopItem then return end
+
+    local itemName = getSingleFlag("GemShopItemUI", "Lucky Item")
+    local itemId = GEM_SHOP_MAP[itemName] or "lucky"
+    local minGems = tonumber(Library.Flags["MinGems"]) or MIN_GEMS_DEFAULT
+
+    if getGems() >= minGems and fireRemote(remotes.BuyGemShopItem, itemId) then
+        stats.gemBuys += 1
+    end
+end, { persistent = true })
+
+interval("AutoIndex", "AutoIndex", 15, function()
+    fireRemote(remotes.ClaimAllIndexGems)
+end, { persistent = true })
+
+interval("AutoSpin", "AutoSpin", 8, function()
+    local spinData = invokeRemote(funcs.SpinWheelData)
+    if type(spinData) ~= "table" then return end
+
+    if spinData.canClaimFree then
+        fireRemote(remotes.SpinWheel, "claim_free")
+    end
+    if type(spinData.spins) == "number" and spinData.spins > 0 then
+        fireRemote(remotes.SpinWheel, "spin")
+    end
+end, { persistent = true })
+
+interval("AutoDaily", "AutoDaily", 60, function()
+    fireRemote(remotes.DailyReward, "claim")
+end, { persistent = true })
+
+interval("AutoOffline", "AutoOffline", 60, function()
+    fireRemote(remotes.OfflineReward, "claim_normal")
+end, { persistent = true })
+
+-- =============================================
+-- AUTO WISH (PerformWish is a RemoteFunction!)
+-- =============================================
+interval("AutoWish", "AutoWish", 5, function()
+    if not funcs.PerformWish then return end
+    local ok = pcall(function() funcs.PerformWish:InvokeServer() end)
+    if ok then stats.wishes += 1 end
+end, { persistent = true })
+
+-- =============================================
+-- AUTO CRAFT TROPHY (multi-select; needs trophy NAME arg)
+-- =============================================
+interval("AutoCraftTrophy", "AutoCraftTrophy", 15, function()
+    if not remotes.CraftTrophy then return end
+    local selected = getMultiFlag("CraftTrophyList", {})
+    if #selected == 0 then return end
+    for _, label in ipairs(selected) do
+        local name = trophyLabelToName[label] or label
+        if fireRemote(remotes.CraftTrophy, name) then
+            stats.trophiesCrafted += 1
+        end
+        task.wait(0.15)
+    end
+end, { persistent = true })
+
+-- =============================================
+-- AUTO APPLY TROPHY (best trophy → best plot)
+-- ApplyTrophy(trophyName, plotNumber)
+-- =============================================
+interval("AutoApplyTrophy", "AutoApplyTrophy", 20, function()
+    if not remotes.ApplyTrophy then return end
+    local data = getPlayerData()
+    if not data then return end
+    local trophies = data.trophies or {}
+    local slots = data.slots or {}
+    local trophyDefsSource = (TrophyConfig and TrophyConfig.Trophies) or TrophyConfig or {}
+
+    -- Available unequipped trophies sorted by rarity desc
+    local available = {}
+    for k, tr in pairs(trophies) do
+        if type(tr) == "table" then
+            local trophyName = tr.name or tr.id or (type(k) == "string" and k or nil)
+            local equipped = tr.equipped or tr.equippedTo or tr.plot
+            if trophyName and not equipped then
+                local cfg = trophyDefsSource[trophyName]
+                local rarity = (type(cfg) == "table" and cfg.Rarity) or "Bronze"
+                table.insert(available, { name = trophyName, lvl = rarityOrder[rarity] or 0 })
+            end
+        end
+    end
+    table.sort(available, function(a, b) return a.lvl > b.lvl end)
+    if #available == 0 then return end
+
+    -- Plots sorted by income of equipped card desc; skip plots with trophy
+    local plotList = {}
+    for slotIndex, sd in pairs(slots) do
+        if type(sd) == "table" and sd.card and not (sd.trophy or sd.trophyName) then
+            local plot = tonumber(slotIndex) or slotIndex
+            if type(plot) == "number" then
+                table.insert(plotList, { plot = plot, inc = getCardScore(sd.card) })
+            end
+        end
+    end
+    table.sort(plotList, function(a, b) return a.inc > b.inc end)
+
+    for i = 1, math.min(#available, #plotList) do
+        if fireRemote(remotes.ApplyTrophy, available[i].name, plotList[i].plot) then
+            stats.trophiesApplied += 1
+        end
+        task.wait(0.15)
+    end
+end, { persistent = true })
+
+-- =============================================
+-- AUTO TOURNAMENT (join + equip best)
+-- =============================================
+interval("AutoJoinTournament", "AutoJoinTournament", 15, function()
+    if not remotes.Tournament then return end
+    if tournamentState.inTournament then return end
+    if fireRemote(remotes.Tournament, "join") then
+        tournamentState.joins += 1
+        stats.tournamentJoins += 1
+        tournamentState.inTournament = true
+    end
+end, { persistent = true })
+
+interval("AutoEquipBestTourney", "AutoEquipBestTourney", 30, function()
+    if not remotes.Tournament then return end
+    fireRemote(remotes.Tournament, "equip_best")
+end, { persistent = true })
+
+-- =============================================
+-- AUTO USE POTION (force weather event, 300s cooldown)
+-- =============================================
+interval("AutoUsePotion", "AutoUsePotion", 300, function()
+    if not remotes.UsePotion then return end
+    local potion = getSingleFlag("PotionType", potionList[1])
+    if not potion or potion == "" then return end
+    if fireRemote(remotes.UsePotion, potion) then
+        stats.potionsUsed += 1
+    end
+end, { persistent = true })
+
+-- =============================================
+-- NATIVE PACK SETTINGS SYNC (hide-animation toggle, server-side)
+-- =============================================
+local _lastPackHide = nil
+interval("PackSettingsSync", nil, 1, function()
+    if not remotes.PackSettings then return end
+    local desired = Library.Flags["PackHideAnim"] == true
+    if desired ~= _lastPackHide then
+        _lastPackHide = desired
+        fireRemote(remotes.PackSettings, "packHideAnimation", desired)
+    end
+end, { persistent = true })
+
+interval("AutoRedeemCodes", "AutoRedeemCodes", 1, function()
+    if stats.codesRedeemed then return end
+    stats.codesRedeemed = true
+
+    local codes = {}
+    local ok, result = pcall(function()
+        return game:HttpGet(CODES_URL)
+    end)
+
+    if ok and type(result) == "string" then
+        for line in result:gmatch("[^\r\n]+") do
+            local cleaned = line:gsub("%s+", "")
+            if cleaned ~= "" and #cleaned >= 3 then
+                table.insert(codes, cleaned)
+            end
+        end
+    end
+
+    if #codes == 0 then
+        notify("Codes", "No codes were found.", "warning")
+        return
+    end
+
+    for _, code in ipairs(codes) do
+        fireRemote(remotes.RedeemCode, string.lower(code))
+        task.wait(CODE_WAIT)
+    end
+
+    notify("Codes", "Redeemed " .. #codes .. " codes.", "info")
+end, { persistent = true })
+
+interval("AutoRebirth", "AutoRebirth", function()
+    return Library.Flags["ForceRebirth"] and REBIRTH_CD_FORCE or REBIRTH_CD_NORMAL
+end, function()
+    local shouldRebirth = Library.Flags["ForceRebirth"] == true or canRebirth()
+    if not shouldRebirth then return end
+
+    local before = getRebirthLevel()
+    fireRemote(remotes.Rebirth)
+    task.wait(1.5)
+
+    if getRebirthLevel() > before then
+        stats.rebirths += 1
+    end
+end, { persistent = true })
+
+interval("WebhookStats", "WebhookStats", function()
+    return math.max((tonumber(Library.Flags["WebhookStatsDelay"]) or STATS_DELAY_DEFAULT) * 60, 60)
+end, function()
+    dispatchWebhook({
+        embeds = {{
+                title = "[+] Spin a Soccer Card Analytics",
+                description = "[$] **Cash:** $" .. formatCash(getCash()) .. "\n"
+                .. "[*] **Gems:** " .. formatCash(getGems()) .. "\n"
+                .. "[#] **Rebirth Level:** " .. getRebirthLevel() .. "\n"
+                .. "[>] **Packs Opened:** " .. formatCash(stats.opened) .. "\n"
+                .. "[!] **Session Rebirths:** " .. stats.rebirths,
+                color = 3447003,
+                footer = { text = "Spin a Soccer Card - User: " .. client.Name },
+            }}
+    })
+end, { persistent = true })
+
+interval("SSC_SuppressFlagSync", nil, 1, function()
+    syncUiSuppressFlags()
+end)
+
+interval("SSC_GuiSuppressor", function()
+    return Library.Flags["DisablePopups"] == true or Library.Flags["DisableNotifs"] == true
+end, 1, function()
+    local playerGui = client:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+
+    if Library.Flags["DisablePopups"] then
+        for _, promptName in ipairs({ "RebirthPrompt", "OfflineRewardPrompt", "BoothPurchasePrompt" }) do
+            local promptGui = playerGui:FindFirstChild(promptName)
+            if promptGui and promptGui:IsA("ScreenGui") then
+                promptGui.Enabled = false
+            end
+        end
+    end
+
+    if Library.Flags["DisableNotifs"] then
+        local notifGui = playerGui:FindFirstChild("Notification")
+        if notifGui and notifGui:IsA("ScreenGui") then
+            notifGui.Enabled = false
+            local mainFrame = notifGui:FindFirstChild("Main")
+            if mainFrame then
+                for childIndex, child in ipairs(mainFrame:GetChildren()) do
+                    if childIndex % 20 == 0 then
+                        task.wait()
+                    end
+
+                    local isPlaceholder = child.Name == "Placeholder" or child.Name == "PlaceholderAnnouncement"
+                    if child:IsA("Frame") and not isPlaceholder then
+                        child.Visible = false
+                    end
+                end
+            end
+        end
+    end
+end, { persistent = true })
 
 local function formatDuration(secs)
     secs = math.max(0, math.floor(secs))
@@ -133,1928 +1639,68 @@ local function formatDuration(secs)
     return string.format("%02d:%02d:%02d", h, m, s)
 end
 
-
--- [ NETWORKER + REMOTES ]
-print("[SSC] Resolving Networker...")
-local Networker = require(RS.Source.Shared.Networker)
-
--- Fast path: try RS.Remotes folder first (instant), then Networker (slow w/ WaitForChild)
-local function getRemote(name)
-    local folder = RS:FindFirstChild("Remotes")
-    if folder then
-        local r = folder:FindFirstChild(name)
-        if r then return r end
-    end
-    local result, done = nil, false
-    task.spawn(function()
-        local ok, r = pcall(function() return Networker.get_remote(name) end)
-        if ok and r then result = r end
-        done = true
-    end)
-    local t = 0
-    while not done and t < 1.5 do task.wait(0.05) t = t + 0.05 end
-    return result
-end
-
-local function getFunction(name)
-    local folder = RS:FindFirstChild("Remotes")
-    if folder then
-        local r = folder:FindFirstChild(name)
-        if r then return r end
-    end
-    local result, done = nil, false
-    task.spawn(function()
-        local ok, r = pcall(function() return Networker.get_remotefunction(name) end)
-        if ok and r then result = r end
-        done = true
-    end)
-    local t = 0
-    while not done and t < 1.5 do task.wait(0.05) t = t + 0.05 end
-    return result
-end
-
--- Core remotes (must exist). Fetched in parallel; loop blocks until OpenPack is ready.
-local CORE_REMOTES = {
-    "OpenPack","BuyPack","EquipCard","CollectSlot","SellCards","DeletePacks",
-    "Rebirth","BuyGemShopItem","ClaimAllIndexGems","DailyReward",
-    "OfflineReward","SpinWheel","RedeemCode",
-    -- Native game features (confirmed via dump):
-    "PackSettings",       -- server-side auto-open + hide animation
-    "Tournament",         -- join + equip_best
-    "UsePotion",          -- weather potions
-    "Notification",       -- listen for game notifications
-}
--- Optional remotes (real names from dump). Lazy-loaded.
-local OPTIONAL_REMOTES = {
-    "PerformWish","Wish",
-    "ApplyTrophy","DestroyTrophy","ApplyWorldCupTrophy","CraftTrophy",
-    "TournamentState","TournamentTick","TournamentServer",
-    "RequestFriendsLeaderboard",
-    "LockCard","UnlockCard",
-}
-local FUNCS = { "SpinWheelData" }
-
-local remotes, funcs = {}, {}
-
--- parallel core fetch
-do
-    print("[SSC] Fetching " .. #CORE_REMOTES .. " core remotes...")
-    local pending = #CORE_REMOTES + #FUNCS
-    for _, n in ipairs(CORE_REMOTES) do
-        task.spawn(function()
-            remotes[n] = getRemote(n)
-            pending = pending - 1
-        end)
-    end
-    for _, n in ipairs(FUNCS) do
-        task.spawn(function()
-            funcs[n] = getFunction(n)
-            pending = pending - 1
-        end)
-    end
-    local t = 0
-    while pending > 0 and t < 5 do task.wait(0.05) t = t + 0.05 end
-
-    -- Block specifically until OpenPack is ready (critical for auto-roll)
-    t = 0
-    while not remotes.OpenPack and t < 5 do
-        remotes.OpenPack = getRemote("OpenPack")
-        task.wait(0.1)
-        t = t + 0.1
-    end
-    print("[SSC] Core remotes ready. OpenPack: " .. tostring(remotes.OpenPack ~= nil))
-end
-
--- lazy resolver for optional remotes
-local lazyResolved = {}
-setmetatable(remotes, { __index = function(t, k)
-    for _, n in ipairs(OPTIONAL_REMOTES) do
-        if n == k then
-            if lazyResolved[k] then return rawget(t, k) end
-            lazyResolved[k] = true
-            local r = getRemote(k)
-            rawset(t, k, r)
-            return r
-        end
-    end
-    return nil
-end })
-
-
--- [ CONFIGS ]
-print("[SSC] Loading configs...")
-local PackConfig    = require(RS.Source.Shared.Configs.PackConfig)
-local CardConfig    = require(RS.Source.Shared.Configs.CardConfig)
-local RebirthConfig = require(RS.Source.Shared.Configs.RebirthConfig)
-local PlayerStore   = require(RS.Source.Shared.State.PlayerStore)
-local WeatherStore  = nil
-pcall(function() WeatherStore = require(RS.Source.Shared.State.WeatherStore) end)
-
--- Optional configs (exist per dump)
-local TournamentConfig, TrophyConfig, PotionConfig = nil, nil, nil
-pcall(function() TournamentConfig = require(RS.Source.Shared.Configs.TournamentConfig) end)
-pcall(function() TrophyConfig     = require(RS.Source.Shared.Configs.TrophyConfig) end)
-pcall(function() PotionConfig     = require(RS.Source.Shared.Configs.PotionConfig) end)
-
--- Build potion list from config
-local potionList = {}
-if PotionConfig and PotionConfig.Potions then
-    for name in pairs(PotionConfig.Potions) do
-        table.insert(potionList, name)
-    end
-    table.sort(potionList)
-end
-if #potionList == 0 then
-    potionList = { "Snowstorm Potion", "Thunderstorm Potion", "Toxic Rain Potion", "Blood Moon Potion", "Solar Eclipse Potion" }
-end
-
--- Build trophy list from config (sorted by rarity)
-local trophyList = {}
-if TrophyConfig then
-    -- TrophyConfig has a Trophies table OR the trophies are top-level keys
-    local trophies = TrophyConfig.Trophies or TrophyConfig
-    for name, data in pairs(trophies) do
-        if type(data) == "table" and (data.DisplayName or data.Rarity or data.Requirements) then
-            local rarity = data.Rarity or "?"
-            local lvl = rarityOrder[rarity] or 0
-            table.insert(trophyList, { name = name, rarity = rarity, lvl = lvl })
-        end
-    end
-    table.sort(trophyList, function(a, b)
-        if a.lvl ~= b.lvl then return a.lvl > b.lvl end
-        return a.name < b.name
-    end)
-end
-local trophyNameList = {}
-for _, t in ipairs(trophyList) do
-    table.insert(trophyNameList, t.name .. " [" .. t.rarity .. "]")
-end
-if #trophyNameList == 0 then
-    trophyNameList = { "Golden Boot [Legendary]", "Champions League [Mythic]", "Ballon d'Or [Divine]" }
-end
--- map display label -> raw trophy name (for FireServer)
-local trophyLabelToName = {}
-for i, t in ipairs(trophyList) do
-    trophyLabelToName[trophyNameList[i]] = t.name
-end
-
-
--- [ SESSION STATS ]
-local stats = {
-    opened=0, bought=0, sold=0, rebirths=0, gemBuys=0, collects=0,
-    locked=0, wishes=0, trophiesCrafted=0, hopCount=0,
-    sessionStart=os.time(),
-    cashStart=nil, gemsStart=nil, rebirthStart=nil,
-    rarityRolls={}, lastRebirthTs=os.time(),
-}
-
-local tournamentState = {
-    inTournament=false, placement=nil, startedAt=nil,
-    joins=0, wins=0, lastTick=0,
-}
-
-
--- [ PLAYER DATA ]
-local function getPlayerData()
-    local ok, state = pcall(function() return PlayerStore() end)
-    if not ok or not state or not state.players then return nil end
-    return state.players[tostring(client.UserId)]
-end
-
-local function getInventory()  local d = getPlayerData() return d and d.inventory or {} end
-local function getSlots()      local d = getPlayerData() return d and d.slots     or {} end
-local function getCash()       local d = getPlayerData() return d and d.cash      or 0  end
-local function getGems()       local d = getPlayerData() return d and d.gems      or 0  end
-local function getRebirthLevel() local d = getPlayerData() return d and d.rebirth or 0 end
-
-
--- [ WEATHER ]
-local function getActiveWeathersList()
-    if not WeatherStore then return {} end
-    local ok, state = pcall(function() return WeatherStore() end)
-    if not ok or not state or type(state.activeWeathers) ~= "table" then return {} end
-    local active = {}
-    local now = Workspace:GetServerTimeNow()
-    for w, data in pairs(state.activeWeathers) do
-        if data and data.endTime and data.endTime > now then
-            table.insert(active, w)
-        end
-    end
-    return active
-end
-
-local function getActiveWeathers()
-    local a = getActiveWeathersList()
-    return (#a > 0) and table.concat(a, ", ") or "None"
-end
-
-local function weatherIsActive(name)
-    for _, w in ipairs(getActiveWeathersList()) do if w == name then return true end end
-    return false
-end
-
-
--- [ PACK LIST ]
-local function getPackList()
-    local list = {}
-    for packName, packData in pairs(PackConfig.Packs or {}) do
-        if not packData.HideFromShop then table.insert(list, packName) end
-    end
-    table.sort(list, function(a, b)
-        local pa, pb = PackConfig.Packs[a], PackConfig.Packs[b]
-        return (pa and pa.LayoutOrder or 999) < (pb and pb.LayoutOrder or 999)
-    end)
-    return list
-end
-
-local function packPrice(name)
-    local p = PackConfig.Packs[name]
-    return p and (p.Price or 0) or 0
-end
-
-
--- [ RARITY SYSTEM ]
-local rarityOrder = {
-    ["Bronze"]=1,["Silver"]=2,["Gold"]=3,["Legendary"]=4,["Mythic"]=5,
-    ["Azure Zenith"]=6,["Crimson Zenith"]=7,["Divine"]=8,["Primordial"]=9,
-    ["Oblivion"]=10,["Eternity"]=11,["Astral"]=12,["Sovereign"]=13,
-    ["Vandal"]=14,["The Monarch"]=15,["Tyrant"]=16,["Verdant"]=17,
-    ["Silvane"]=18,["Lunar"]=19,["Solar"]=20,["Nether"]=21,["Aether"]=22,
-    ["Player of the Month"]=23,["Exclusive"]=24,["Secret Exclusive"]=25,
-}
-do
-    local maxIdx = 0
-    for _, v in pairs(rarityOrder) do if v > maxIdx then maxIdx = v end end
-    for _, cfg in pairs(CardConfig.Cards or {}) do
-        local r = cfg and cfg.Rarity
-        if r and not rarityOrder[r] then maxIdx = maxIdx + 1 rarityOrder[r] = maxIdx end
-    end
-end
-local rarityList = {}
-for n in pairs(rarityOrder) do table.insert(rarityList, n) end
-table.sort(rarityList, function(a, b) return rarityOrder[a] < rarityOrder[b] end)
-
-local function getRarityLevel(r) return rarityOrder[r] or 0 end
-
-
--- [ CARD ID LIST (Legendary+, capped) ]
-local CARD_LIST_MIN_RARITY = 4
-local CARD_LIST_HARD_CAP   = 300
-local cardIdList, cardDisplayToId = {}, {}
-do
-    local temp = {}
-    for id, cfg in pairs(CardConfig.Cards or {}) do
-        local lvl = (cfg and rarityOrder[cfg.Rarity]) or 0
-        if lvl >= CARD_LIST_MIN_RARITY then
-            local label = string.format("%s [%s]", (cfg.DisplayName or id), cfg.Rarity or "?")
-            table.insert(temp, { label=label, id=id, lvl=lvl, name=cfg.DisplayName or id })
-        end
-    end
-    table.sort(temp, function(a, b)
-        if a.lvl ~= b.lvl then return a.lvl > b.lvl end
-        return a.name < b.name
-    end)
-    for i = 1, math.min(#temp, CARD_LIST_HARD_CAP) do
-        table.insert(cardIdList, temp[i].label)
-        cardDisplayToId[temp[i].label] = temp[i].id
-    end
-end
-if #cardIdList == 0 then table.insert(cardIdList, "(no cards found)") end
-
-
--- [ REBIRTH ]
-local function getRebirthRequirements()
-    local d = getPlayerData()
-    if not d then return nil end
-    local nl = (d.rebirth or 0) + 1
-    local ok, rd = pcall(function()
-        return RebirthConfig and RebirthConfig.GetRebirth and RebirthConfig.GetRebirth(nl)
-    end)
-    return (ok and rd) or nil
-end
-
-local function canRebirth()
-    local maxR = 999
+interval("SSC_StatsUIUpdate", nil, 2, function()
     pcall(function()
-        if RebirthConfig and RebirthConfig.GetMaxRebirth then
-            maxR = RebirthConfig.GetMaxRebirth()
+        local playerData = getPlayerData() or {}
+        local cash = tonumber(playerData.cash) or 0
+        local gems = tonumber(playerData.gems) or 0
+        local rebirth = tonumber(playerData.rebirth) or 0
+        local uptime = os.time() - (stats.sessionStart or os.time())
+
+        if labelCash and labelCash.Set then labelCash:Set("💰 Cash: $" .. formatCash(cash)) end
+        if labelGems and labelGems.Set then labelGems:Set("💎 Gems: " .. math.floor(gems)) end
+        if labelRebirth and labelRebirth.Set then labelRebirth:Set("🌟 Rebirth Level: " .. rebirth) end
+        if labelOpened and labelOpened.Set then labelOpened:Set("📦 Packs Opened: " .. stats.opened) end
+        if labelBought and labelBought.Set then labelBought:Set("🛒 Packs Bought: " .. stats.bought) end
+        if labelSold and labelSold.Set then labelSold:Set("💸 Cards Sold: " .. stats.sold) end
+        if labelCollects and labelCollects.Set then labelCollects:Set("💵 Collects: " .. stats.collects) end
+        if labelGemBuys and labelGemBuys.Set then labelGemBuys:Set("💎 Gem Buys: " .. stats.gemBuys) end
+        if labelSessionRebirths and labelSessionRebirths.Set then labelSessionRebirths:Set("🔄 Session Rebirths: " .. stats.rebirths) end
+        if labelWishes and labelWishes.Set then labelWishes:Set("✨ Wishes: " .. (stats.wishes or 0)) end
+        if labelTrophies and labelTrophies.Set then labelTrophies:Set("🏆 Trophies Crafted: " .. (stats.trophiesCrafted or 0)) end
+        if labelPotions and labelPotions.Set then labelPotions:Set("🧪 Potions Used: " .. (stats.potionsUsed or 0)) end
+        if labelUptime and labelUptime.Set then labelUptime:Set("⏱️ Uptime: " .. formatDuration(uptime)) end
+
+        if labelTourneyState and labelTourneyState.Set then
+            labelTourneyState:Set("Status: " .. (tournamentState.inTournament and "🟢 in tournament" or "⚪ idle"))
         end
+        if labelTourneyJoins and labelTourneyJoins.Set then labelTourneyJoins:Set("Joined: " .. tournamentState.joins) end
+        if labelTourneyWins  and labelTourneyWins.Set  then labelTourneyWins:Set("Top-3 finishes: " .. tournamentState.wins) end
     end)
-    local d = getPlayerData()
-    if not d or (d.rebirth or 0) >= maxR then return false end
-    local rd = getRebirthRequirements()
-    if not rd then return false end
-    if (d.cash or 0) < (rd.CashRequired or math.huge) then return false end
-    if (rd.GemsRequired or 0) > 0 and (d.gems or 0) < rd.GemsRequired then return false end
-    return true
-end
-
-
--- [ EQUIP BEST CARDS ]
-local SlotController = nil
-local function equipBest()
-    if not SlotController then
-        local ok, ctrl = pcall(function()
-            return require(RS.Source.Client.Controllers.SlotController)
-        end)
-        if ok and ctrl then SlotController = ctrl end
-    end
-    if SlotController and SlotController.equipBestCards then
-        local ok = pcall(SlotController.equipBestCards)
-        if ok then return true end
-    end
-
-    local inventory = getInventory()
-    local slots     = getSlots()
-    local candidates = {}
-    for _, card in ipairs(inventory) do
-        if card and card.id and card.uuid and not BLOCKED_IDS[card.id]
-           and not card.throneCard and not card.locked then
-            local cfg = CardConfig.Cards[card.id]
-            table.insert(candidates, {
-                uuid=card.uuid, id=card.id, income=(cfg and cfg.IncomeRate or 0),
-            })
-        end
-    end
-    table.sort(candidates, function(a, b) return a.income > b.income end)
-
-    local slotCount = 0
-    for _ in pairs(slots) do slotCount = slotCount + 1 end
-    if slotCount == 0 then slotCount = 6 end
-
-    local equipped = 0
-    for i = 1, math.min(#candidates, slotCount) do
-        local cand = candidates[i]
-        local sl   = slots[tostring(i)] or slots[i]
-        local curIncome = 0
-        if sl and sl.card then
-            local cfg = CardConfig.Cards[sl.card.id]
-            curIncome = cfg and cfg.IncomeRate or 0
-        end
-        if cand.income > curIncome then
-            remotes.EquipCard:FireServer(cand.uuid, i)
-            equipped = equipped + 1
-            hwait(0.08, 0.18)
-        end
-    end
-    return equipped > 0
-end
-
-
--- [ WHITELIST / PROTECTED ]
-local function isProtectedById(id)
-    if BLOCKED_IDS[id] then return true end
-    local flag = Library.Flags["ProtectedCards"]
-    if type(flag) ~= "table" then return false end
-    for _, label in ipairs(flag) do
-        if cardDisplayToId[label] == id then return true end
-    end
-    return false
-end
-
-local function isLastCopy(id)
-    if not Library.Flags["KeepOneOfEach"] then return false end
-    local count = 0
-    for _, c in ipairs(getInventory()) do
-        if c.id == id then count = count + 1 end
-        if count > 1 then return false end
-    end
-    return count <= 1
-end
-
-
--- [ WEBHOOK ]
-getgenv().WebhookURL    = ""
-getgenv().WebhookPingID = ""
-
-local function dispatchWebhook(payload)
-    local url = getgenv().WebhookURL or ""
-    if url == "" or not req then return end
-    local pingId = getgenv().WebhookPingID or ""
-    if pingId ~= "" then payload.content = "<@" .. pingId .. ">" end
-    pcall(function()
-        req({
-            Url     = url,
-            Method  = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body    = HttpService:JSONEncode(payload),
-        })
-    end)
-end
-
-
--- [ OPENPACK LISTENER (rare rolls + hunt + auto-lock + tracking) ]
-local huntFound = false
-if remotes.OpenPack then
-    remotes.OpenPack.OnClientEvent:Connect(function(img, cData, color, uuid, chances, isNew, pName)
-      pcall(function()
-        if img == "x" or type(cData) ~= "table" then return end
-
-        local r = cData.Rarity or "Common"
-        stats.rarityRolls[r] = (stats.rarityRolls[r] or 0) + 1
-
-        -- Hunting
-        if Library.Flags["HuntingMode"] then
-            local tf = Library.Flags["HuntTarget"]
-            local tl = type(tf) == "table" and tf[1] or tf
-            local tid = cardDisplayToId[tl or ""]
-            if tid and cData.id == tid and not huntFound then
-                huntFound = true
-                logEvent("Hunt", "Target found: " .. (cData.DisplayName or cData.id))
-                Library.Flags["AutoOpenPacks"] = false
-                Library.Flags["AutoBuyPacks"]  = false
-                if remotes.LockCard and uuid then
-                    pcall(function() remotes.LockCard:FireServer(uuid) end)
-                end
-                if Library.Flags["WebhookRareRolls"] then
-                    dispatchWebhook({ embeds = {{
-                        title = "🎯 Hunt Complete!",
-                        description = "Target card rolled.",
-                        color = 16711680,
-                        fields = {
-                            { name="Card", value=cData.DisplayName or cData.id, inline=false },
-                            { name="Pack", value=pName or "?", inline=true },
-                        },
-                        footer = { text = "Spin a Soccer Card" },
-                    }}})
-                end
-                notify("Hunt", "Target obtained!", "info")
-            end
-        end
-
-        -- Rare-roll webhook
-        if Library.Flags["WebhookRareRolls"] then
-            local tf = Library.Flags["WebhookRarityThresh"]
-            local tn = (type(tf)=="string" and tf) or (type(tf)=="table" and tf[1]) or RARITY_THRESH_DEFAULT
-            if getRarityLevel(r) >= getRarityLevel(tn) then
-                local thumbUrl = ""
-                local imageId = string.match(cData.ImageId or "", "%d+")
-                if imageId then
-                    pcall(function()
-                        local rs = req({ Url=string.format(ROBLOX_THUMBS, imageId), Method="GET" })
-                        if rs and rs.Body then
-                            local d = HttpService:JSONDecode(rs.Body)
-                            if d.data and d.data[1] then thumbUrl = d.data[1].imageUrl or "" end
-                        end
-                    end)
-                end
-                local cfg = CardConfig.Cards[cData.id]
-                local inc = cfg and cfg.IncomeRate or cData.IncomeRate or 0
-                dispatchWebhook({ embeds = {{
-                    title = "✨ Rare Card Rolled!",
-                    color = 16766720,
-                    thumbnail = { url = thumbUrl },
-                    author = { name = client.Name, icon_url = string.format(ROBLOX_AVATAR, client.UserId) },
-                    fields = {
-                        { name="Card",   value = cData.DisplayName or cData.id, inline=true },
-                        { name="Rarity", value = r, inline=true },
-                        { name="Pack",   value = pName or "?", inline=true },
-                        { name="Income", value = "$" .. formatCash(inc) .. "/s", inline=true },
-                        { name="New?",   value = isNew and "Yes" or "No", inline=true },
-                    },
-                    footer = { text = "Spin a Soccer Card • " .. os.date("%H:%M:%S") },
-                }}})
-            end
-        end
-
-        -- Auto-lock rares
-        if Library.Flags["AutoLock"] then
-            local lf = Library.Flags["AutoLockRarity"]
-            local ln = (type(lf)=="string" and lf) or (type(lf)=="table" and lf[1]) or "Mythic"
-            if getRarityLevel(r) >= getRarityLevel(ln) and remotes.LockCard and uuid then
-                pcall(function() remotes.LockCard:FireServer(uuid) end)
-                stats.locked = stats.locked + 1
-            end
-        end
-      end) -- end inner pcall
-    end)
-end
-
-
--- [ SAFE EVENT-LISTENER HELPER ]
--- Only RemoteEvents have OnClientEvent. Trying to access it on a RemoteFunction
--- THROWS (not nil) — so we must check ClassName before connecting.
-local function safeConnectClientEvent(remote, handler, tag)
-    if not remote then return end
-    local ok, cls = pcall(function() return remote.ClassName end)
-    if not ok or cls ~= "RemoteEvent" then
-        logEvent("Listener", (tag or "remote") .. ": not a RemoteEvent (got " .. tostring(cls) .. "), skipped.")
-        return
-    end
-    pcall(function()
-        remote.OnClientEvent:Connect(function(...) pcall(handler, ...) end)
-    end)
-end
-
-
--- [ GAME NOTIFICATION LISTENER ]
-safeConnectClientEvent(remotes.Notification, function(data)
-    if type(data) ~= "table" then return end
-    local msg = tostring(data.Msg or data.msg or "")
-    if msg == "" then return end
-    if Library.Flags["WebhookGameNotifs"] then
-        local success = (data.Success ~= false)
-        dispatchWebhook({ embeds = {{
-            title = success and "🟢 Game Notification" or "🔴 Game Notification",
-            description = msg,
-            color = success and 3066993 or 15158332,
-            footer = { text = "Spin a Soccer Card • " .. os.date("%H:%M:%S") },
-        }}})
-    end
-    logEvent("GameNotif", msg)
-end, "Notification")
-
-
--- [ TOURNAMENT STATE LISTENER ]
--- TournamentState may be a RemoteFunction in some versions of the game — guard for that.
-safeConnectClientEvent(remotes.TournamentState or remotes.Tournament, function(data)
-    if type(data) ~= "table" then return end
-    if data.placement then tournamentState.placement = data.placement end
-    if data.active ~= nil then
-        if data.active and not tournamentState.inTournament then
-            tournamentState.inTournament = true
-            tournamentState.startedAt    = os.time()
-            logEvent("Tournament", "Joined")
-        elseif not data.active and tournamentState.inTournament then
-            tournamentState.inTournament = false
-            if (tournamentState.placement or 999) <= 3 then
-                tournamentState.wins = tournamentState.wins + 1
-            end
-            logEvent("Tournament", "Ended — placement " .. tostring(tournamentState.placement))
-            if Library.Flags["WebhookTournament"] then
-                dispatchWebhook({ embeds = {{
-                    title = "🏆 Tournament Finished",
-                    description = "Placement: **" .. tostring(tournamentState.placement or "?") .. "**",
-                    color = (tournamentState.placement or 999) <= 3 and 16766720 or 7506394,
-                    footer = { text = "Spin a Soccer Card" },
-                }}})
-            end
-        end
-    end
-end, "TournamentState")
-
-safeConnectClientEvent(remotes.TournamentTick, function()
-    tournamentState.lastTick = os.clock()
-end, "TournamentTick")
-
-
--- [ SERVER HOP ]
-local function fetchServers()
-    if not req then return nil end
-    local result = nil
-    pcall(function()
-        local r = req({ Url = string.format(SERVERS_API, PLACE_ID), Method = "GET" })
-        if r and r.Body then
-            local d = HttpService:JSONDecode(r.Body)
-            result = d and d.data
-        end
-    end)
-    return result
-end
-
-local function serverHop(mode)
-    local servers = fetchServers()
-    if not servers or #servers == 0 then
-        notify("Hop", "Failed to fetch server list.", "warning") return
-    end
-    local current, valid = game.JobId, {}
-    for _, s in ipairs(servers) do
-        if s.id ~= current and s.playing and s.maxPlayers and s.playing < s.maxPlayers then
-            table.insert(valid, s)
-        end
-    end
-    if #valid == 0 then notify("Hop", "No alternate servers.", "warning") return end
-    table.sort(valid, function(a, b)
-        if mode == "low_ping" then return (a.ping or 9999) < (b.ping or 9999)
-        elseif mode == "random" then return math.random() < 0.5
-        else return (a.playing or 0) < (b.playing or 0) end
-    end)
-    stats.hopCount = stats.hopCount + 1
-    pcall(function() TeleportService:TeleportToPlaceInstance(PLACE_ID, valid[1].id, client) end)
-end
-
-
--- [ AUTO REJOIN ]
-GuiService.ErrorMessageChanged:Connect(function()
-    if Library.Flags["AutoRejoin"] then
-        task.wait(1)
-        pcall(function() TeleportService:Teleport(PLACE_ID, client) end)
-    end
-end)
-client.OnTeleport:Connect(function(state)
-    if state == Enum.TeleportState.Failed and Library.Flags["AutoRejoin"] then
-        task.wait(3)
-        pcall(function() TeleportService:Teleport(PLACE_ID, client) end)
-    end
 end)
 
-
--- [ INVENTORY HELPERS ]
-local function rarityCounts()
-    local out = {}
-    for _, card in ipairs(getInventory()) do
-        local cfg = CardConfig.Cards[card.id]
-        local r = (cfg and cfg.Rarity) or "Unknown"
-        out[r] = (out[r] or 0) + 1
-    end
-    return out
-end
-
-
--- [ NOTIFICATION SUPPRESSOR (gentle - only kills floating earnings, NOT camera) ]
-task.spawn(function()
-    while task.wait(0.4) do
-        if not Library.Flags["HideEarningsFloats"] then else end
-        local pgui = client:FindFirstChild("PlayerGui")
-        if pgui then
-            if Library.Flags["HideEarningsFloats"] then
-                -- Only target the "+$58.50M" floating cash labels stacking up.
-                local notif = pgui:FindFirstChild("Notification")
-                if notif then
-                    for _, d in ipairs(notif:GetDescendants()) do
-                        if d:IsA("TextLabel") then
-                            local t = d.Text or ""
-                            if t:find("^%+%$") or t:find("^%-%$") or t:find("^%+%d") then
-                                pcall(function() d.Visible = false end)
+-- =============================================
+-- TOURNAMENT LISTENER (safely connects only if RemoteEvent)
+-- =============================================
+do
+    local r = remotes.Tournament
+    if r then
+        local ok, cls = pcall(function() return r.ClassName end)
+        if ok and cls == "RemoteEvent" and r.OnClientEvent then
+            r.OnClientEvent:Connect(function(data)
+                pcall(function()
+                    if type(data) ~= "table" then return end
+                    if data.placement then tournamentState.placement = data.placement end
+                    if data.active == false or data.ended or data.finished then
+                        if tournamentState.inTournament then
+                            tournamentState.inTournament = false
+                            if (tournamentState.placement or 999) <= 3 then
+                                tournamentState.wins += 1
+                            end
+                            if Library.Flags["WebhookTournament"] then
+                                dispatchWebhook({ embeds = {{
+                                    title = "🏆 Tournament Finished",
+                                    description = "Placement: **" .. tostring(tournamentState.placement or "?") .. "**",
+                                    color = (tournamentState.placement or 999) <= 3 and 16766720 or 7506394,
+                                    footer = { text = "Spin a Soccer Card" },
+                                }}})
                             end
                         end
+                    elseif data.active == true then
+                        tournamentState.inTournament = true
                     end
-                end
-            end
-
-            if Library.Flags["DisableNotifs"] then
-                local n = pgui:FindFirstChild("Notification")
-                if n and n:IsA("ScreenGui") then n.Enabled = false end
-            end
-
-            if Library.Flags["DisablePopups"] then
-                for _, name in ipairs({ "RebirthPrompt","OfflineRewardPrompt","BoothPurchasePrompt" }) do
-                    local g = pgui:FindFirstChild(name)
-                    if g and g:IsA("ScreenGui") and g.Enabled then g.Enabled = false end
-                end
-            end
+                end)
+            end)
         end
-    end
-end)
-
-
--- [ NATIVE PACK SETTINGS (server-side hideAnimation toggle) ]
--- The script's own AutoOpenPacks loop in the Packs tab is faster than
--- the game's native PackAutoOpen — so we only mirror the hideAnimation flag.
-local lastPackHide = nil
-
-local function syncPackSettings()
-    if not remotes.PackSettings then return end
-    local hide = Library.Flags["PackHideAnim"] == true
-    if hide ~= lastPackHide then
-        lastPackHide = hide
-        pcall(function() remotes.PackSettings:FireServer("packHideAnimation", hide) end)
-        logEvent("PackSettings", "hideAnimation = " .. tostring(hide))
     end
 end
-
-task.spawn(function()
-    while task.wait(1) do pcall(syncPackSettings) end
-end)
-
-
--- [ MAIN LOOP ]
-local timers = {
-    collect=0, sell=0, delPacks=0, gemShop=0, rebirth=0, equip=0,
-    index=0, spin=0, daily=0, offline=0, webhook=os.clock(),
-    hourly=os.clock(), wish=0, trophy=0, hop=0,
-    tourneyJoin=0, tourneyEquip=0, potion=0,
-}
-
-task.spawn(function()
-    while task.wait(0.2) do
-      local mainOK, mainErr = pcall(function()
-        if Library.Flags["MasterKillSwitch"] then return end
-        local now = os.clock()
-        _G.SSC_DisablePopups = Library.Flags["DisablePopups"]
-
-        if not stats.cashStart    then stats.cashStart    = getCash() end
-        if not stats.gemsStart    then stats.gemsStart    = getGems() end
-        if not stats.rebirthStart then stats.rebirthStart = getRebirthLevel() end
-
-        -- Stats webhook
-        if Library.Flags["WebhookStats"] then
-            local sd = Library.Flags["WebhookStatsDelay"] or STATS_DELAY_DEFAULT
-            if (now - timers.webhook) >= (sd * 60) then
-                timers.webhook = now
-                local elapsed   = os.time() - stats.sessionStart
-                local cashGain  = getCash() - (stats.cashStart or 0)
-                local cashPerHr = elapsed > 0 and (cashGain/elapsed*3600) or 0
-                local packsPerHr = elapsed > 0 and (stats.opened/elapsed*3600) or 0
-                local reb = getRebirthLevel()
-                local color = 3447003
-                if reb >= 50 then color = 16766720
-                elseif reb >= 25 then color = 10181046
-                elseif reb >= 10 then color = 3066993 end
-                local topR, topC = "—", 0
-                for k, v in pairs(stats.rarityRolls) do if v > topC then topR, topC = k, v end end
-
-                dispatchWebhook({ embeds = {{
-                    title = "📊 Spin a Soccer Card — Session",
-                    color = color,
-                    author = { name = client.Name, icon_url = string.format(ROBLOX_AVATAR, client.UserId) },
-                    thumbnail = { url = string.format(ROBLOX_AVATAR, client.UserId) },
-                    fields = {
-                        { name="💰 Cash",       value="$" .. formatCash(getCash()), inline=true },
-                        { name="💎 Gems",       value=formatCash(getGems()),        inline=true },
-                        { name="🌟 Rebirth",    value=tostring(reb),                inline=true },
-                        { name="📦 Packs Open", value=formatCash(stats.opened),     inline=true },
-                        { name="📦 Per Hour",   value=formatCash(packsPerHr),       inline=true },
-                        { name="💵 Cash / hr",  value="$" .. formatCash(cashPerHr), inline=true },
-                        { name="🎯 Top Rarity", value=topR .. " (" .. topC .. ")",  inline=true },
-                        { name="🏆 Tourneys",   value=tournamentState.joins .. " / " .. tournamentState.wins .. " 🥉+", inline=true },
-                        { name="⏱️ Uptime",     value=formatDuration(elapsed),      inline=true },
-                        { name="🌦️ Weather",    value=getActiveWeathers(),          inline=false },
-                    },
-                    footer = { text = "Spin a Soccer Card • " .. os.date("%Y-%m-%d %H:%M:%S") },
-                }}})
-            end
-        end
-
-        -- Hourly summary
-        if Library.Flags["WebhookHourly"] and (now - timers.hourly) >= 3600 then
-            timers.hourly = now
-            local elapsed = os.time() - stats.sessionStart
-            dispatchWebhook({ embeds = {{
-                title = "⏰ Hourly Summary",
-                description = string.format(
-                    "**Packs:** %d opened, %d bought\n**Sold:** %d cards\n**Rebirths:** %d\n**Wishes:** %d • **Trophies:** %d\n**Hops:** %d • **Tourneys:** %d (top-3: %d)\n**Uptime:** %s",
-                    stats.opened, stats.bought, stats.sold, stats.rebirths,
-                    stats.wishes, stats.trophiesCrafted, stats.hopCount,
-                    tournamentState.joins, tournamentState.wins, formatDuration(elapsed)
-                ),
-                color = 10181046,
-                footer = { text = "Spin a Soccer Card" },
-            }}})
-        end
-
-        -- Auto Index Gems
-        if Library.Flags["AutoIndex"] and (now - timers.index) >= 15 then
-            timers.index = now
-            pcall(function() remotes.ClaimAllIndexGems:FireServer() end)
-        end
-
-        -- Auto Spin Wheel
-        if Library.Flags["AutoSpin"] and (now - timers.spin) >= 8 then
-            timers.spin = now
-            pcall(function()
-                if not funcs.SpinWheelData then return end
-                local ok, sd = pcall(function() return funcs.SpinWheelData:InvokeServer() end)
-                if ok and type(sd) == "table" then
-                    if sd.canClaimFree then remotes.SpinWheel:FireServer("claim_free") end
-                    if type(sd.spins) == "number" and sd.spins > 0 then remotes.SpinWheel:FireServer("spin") end
-                end
-            end)
-        end
-
-        if Library.Flags["AutoDaily"] and (now - timers.daily) >= 60 then
-            timers.daily = now
-            pcall(function() remotes.DailyReward:FireServer("claim") end)
-        end
-
-        if Library.Flags["AutoOffline"] and (now - timers.offline) >= 60 then
-            timers.offline = now
-            pcall(function() remotes.OfflineReward:FireServer("claim_normal") end)
-        end
-
-        -- Auto Wish — PerformWish is a RemoteFunction, must InvokeServer!
-        if Library.Flags["AutoWish"] and (now - timers.wish) >= 5 then
-            timers.wish = now
-            pcall(function()
-                if remotes.PerformWish then
-                    -- Resolve fresh in case lazy-load gave us a stale ref
-                    local pw = remotes.PerformWish
-                    local ok, cls = pcall(function() return pw.ClassName end)
-                    if ok then
-                        if cls == "RemoteFunction" then
-                            pw:InvokeServer()
-                        else
-                            pw:FireServer()
-                        end
-                        stats.wishes = stats.wishes + 1
-                    end
-                end
-            end)
-        end
-
-        -- Auto Craft Trophy — needs trophy NAME argument
-        if Library.Flags["AutoCraftTrophy"] and (now - timers.trophy) >= 15 then
-            timers.trophy = now
-            pcall(function()
-                if not remotes.CraftTrophy then return end
-                -- Resolve every selected trophy from the dropdown
-                local flag = Library.Flags["CraftTrophyList"]
-                local sel  = type(flag) == "table" and flag or {}
-                if #sel == 0 then return end
-                for _, label in ipairs(sel) do
-                    local trophyName = trophyLabelToName[label] or label
-                    pcall(function() remotes.CraftTrophy:FireServer(trophyName) end)
-                    stats.trophiesCrafted = stats.trophiesCrafted + 1
-                    hwait(0.1, 0.2)
-                end
-            end)
-        end
-
-        -- Auto Apply Trophies to best plots — needs (trophyName, plotNumber)
-        if Library.Flags["AutoApplyTrophies"] and (now - timers.trophy) >= 20 then
-            pcall(function()
-                if not remotes.ApplyTrophy then return end
-                local data = getPlayerData()
-                if not data then return end
-                local trophies = data.trophies or {}
-                local slots    = data.slots    or {}
-
-                -- Build sorted list of available (unequipped) trophies by name.
-                -- We don't know each trophy instance's "name" — but the inventory
-                -- stores them keyed by name, or with .name/.id fields.
-                local available = {}
-                for k, tr in pairs(trophies) do
-                    if type(tr) == "table" then
-                        local trophyName = tr.name or tr.id or (type(k) == "string" and k or nil)
-                        local equipped   = tr.equipped or tr.equippedTo or tr.plot
-                        if trophyName and not equipped then
-                            local cfg = TrophyConfig and (
-                                (TrophyConfig.Trophies and TrophyConfig.Trophies[trophyName])
-                                or TrophyConfig[trophyName]
-                            )
-                            local rarity = (cfg and cfg.Rarity) or "Bronze"
-                            table.insert(available, {
-                                name = trophyName,
-                                lvl  = rarityOrder[rarity] or 0,
-                            })
-                        end
-                    end
-                end
-                table.sort(available, function(a, b) return a.lvl > b.lvl end)
-
-                -- Sort plots (slot indices) by income of card on them
-                local plotList = {}
-                for slotIndex, sd in pairs(slots) do
-                    if sd and sd.card then
-                        local cfg = CardConfig.Cards[sd.card.id]
-                        local inc = (cfg and cfg.IncomeRate) or 0
-                        local plotNum = tonumber(slotIndex) or slotIndex
-                        if type(plotNum) == "number" then
-                            -- skip plots that already have a trophy (if known)
-                            if not (sd.trophy or sd.trophyName) then
-                                table.insert(plotList, { plot = plotNum, inc = inc })
-                            end
-                        end
-                    end
-                end
-                table.sort(plotList, function(a, b) return a.inc > b.inc end)
-
-                for i = 1, math.min(#available, #plotList) do
-                    remotes.ApplyTrophy:FireServer(available[i].name, plotList[i].plot)
-                    hwait(0.1, 0.2)
-                end
-            end)
-        end
-
-        -- Auto Join Tournament (native remote: Tournament('join'))
-        if Library.Flags["AutoJoinTournament"] and (now - timers.tourneyJoin) >= 15 then
-            timers.tourneyJoin = now
-            pcall(function()
-                if not remotes.Tournament then return end
-                if tournamentState.inTournament then return end
-                remotes.Tournament:FireServer("join")
-                tournamentState.joins = tournamentState.joins + 1
-                logEvent("Tournament", "Auto-joined")
-            end)
-        end
-
-        -- Auto Equip Best Tournament Team (native: Tournament('equip_best'))
-        if Library.Flags["AutoEquipBestTourney"] and (now - timers.tourneyEquip) >= 30 then
-            timers.tourneyEquip = now
-            pcall(function()
-                if remotes.Tournament then
-                    remotes.Tournament:FireServer("equip_best")
-                end
-            end)
-        end
-
-        -- Auto Use Potion (native: UsePotion('Snowstorm Potion' etc))
-        if Library.Flags["AutoUsePotion"] and (now - timers.potion) >= 300 then
-            timers.potion = now
-            pcall(function()
-                if not remotes.UsePotion then return end
-                local f = Library.Flags["PotionType"]
-                local p = (type(f)=="table" and f[1]) or f or potionList[1]
-                if p and p ~= "" then
-                    remotes.UsePotion:FireServer(p)
-                    logEvent("Potion", "Used " .. p)
-                end
-            end)
-        end
-
-        -- Auto Collect
-        local collectDelay = Library.Flags["CollectDelay"] or COLLECT_DEFAULT
-        if Library.Flags["AutoCollect"] and (now - timers.collect) >= collectDelay then
-            timers.collect = now
-            pcall(function()
-                for slotIndex, sd in pairs(getSlots()) do
-                    if sd and sd.card then
-                        remotes.CollectSlot:FireServer(tonumber(slotIndex))
-                        stats.collects = stats.collects + 1
-                        hwait(0.04, 0.08)
-                    end
-                end
-            end)
-        end
-
-        -- Auto Sell (with weather gate)
-        local sellOK = true
-        if Library.Flags["PauseSellOnLucky"] then
-            for _, w in ipairs(getActiveWeathersList()) do
-                if string.lower(w):find("lucky") then sellOK = false break end
-            end
-        end
-        if Library.Flags["AutoSell"] and sellOK and (now - timers.sell) >= 8 then
-            timers.sell = now
-            pcall(function()
-                local tf = Library.Flags["SellThreshold"]
-                local tn = (type(tf)=="string" and tf) or (type(tf)=="table" and tf[1]) or SELL_DEFAULT
-                local tl = getRarityLevel(tn)
-                local toSell = {}
-                for _, card in ipairs(getInventory()) do
-                    if card and card.id and card.uuid
-                       and not card.throneCard and not card.locked
-                       and not isProtectedById(card.id) and not isLastCopy(card.id) then
-                        local cfg = CardConfig.Cards[card.id]
-                        if cfg and getRarityLevel(cfg.Rarity) < tl then
-                            table.insert(toSell, card.uuid)
-                        end
-                    end
-                end
-                if #toSell > 0 then
-                    remotes.SellCards:FireServer(toSell)
-                    stats.sold = stats.sold + #toSell
-                end
-            end)
-        end
-
-        -- Auto Delete Packs
-        if Library.Flags["AutoDeletePacks"] and (now - timers.delPacks) >= 10 then
-            timers.delPacks = now
-            pcall(function()
-                local f = Library.Flags["DeletePacksList"]
-                local sel = type(f) == "table" and f or {}
-                if #sel > 0 and remotes.DeletePacks then remotes.DeletePacks:FireServer(sel) end
-            end)
-        end
-
-        -- Auto Equip Best
-        if Library.Flags["AutoEquip"] and (now - timers.equip) >= 8 then
-            timers.equip = now
-            pcall(equipBest)
-        end
-
-        -- Auto Gem Shop
-        if Library.Flags["AutoGemShop"] and (now - timers.gemShop) >= 10 then
-            timers.gemShop = now
-            pcall(function()
-                local f = Library.Flags["GemShopItem"]
-                local k = (type(f)=="string" and f) or (type(f)=="table" and f[1]) or "Lucky Item"
-                local minG = Library.Flags["MinGems"] or MIN_GEMS_DEFAULT
-                if getGems() >= minG then
-                    remotes.BuyGemShopItem:FireServer(GEM_SHOP_MAP[k] or "lucky")
-                    stats.gemBuys = stats.gemBuys + 1
-                end
-            end)
-        end
-
-        -- Auto Rebirth
-        local rebCD = Library.Flags["ForceRebirth"] and REBIRTH_CD_FORCE or REBIRTH_CD_NORMAL
-        if Library.Flags["AutoRebirth"] and (now - timers.rebirth) >= rebCD then
-            timers.rebirth = now
-            pcall(function()
-                local cap = Library.Flags["RebirthCap"] or 0
-                if cap > 0 and getRebirthLevel() >= cap then return end
-                local should = Library.Flags["ForceRebirth"] or canRebirth()
-                if not should then return end
-                if Library.Flags["SmartRebirthPrep"] then pcall(equipBest) hwait(0.4, 0.6) end
-                local before = getRebirthLevel()
-                remotes.Rebirth:FireServer()
-                task.wait(1.5)
-                if getRebirthLevel() > before then
-                    stats.rebirths = stats.rebirths + 1
-                    local dt = os.time() - stats.lastRebirthTs
-                    stats.lastRebirthTs = os.time()
-                    logEvent("Rebirth", "Level " .. getRebirthLevel() .. " (Δ" .. dt .. "s)")
-                    if Library.Flags["WebhookMilestones"] then
-                        dispatchWebhook({ embeds = {{
-                            title = "🌟 Rebirth Milestone",
-                            description = "Reached Rebirth Level **" .. getRebirthLevel() .. "**",
-                            color = 16753920,
-                            footer = { text = "Spin a Soccer Card" },
-                        }}})
-                    end
-                    local hopEvery = Library.Flags["HopEveryRebirths"] or 0
-                    if hopEvery > 0 and (stats.rebirths % hopEvery == 0) then
-                        serverHop(Library.Flags["HopMode"] or "low_players")
-                    end
-                end
-            end)
-        end
-      end) -- end pcall(mainOK)
-      if not mainOK then
-          warn("[SSC] main loop error: " .. tostring(mainErr))
-      end
-    end
-end)
-
-
--- [ FAST LOOP: OPEN / BUY PACKS ]
-local openIdx, buyIdx = 1, 1
-task.spawn(function()
-    while task.wait(0.05) do
-      local fastOK, fastErr = pcall(function()
-        if Library.Flags["MasterKillSwitch"] then task.wait(0.3) return end
-
-        -- weather gate
-        local wOK = true
-        if Library.Flags["OnlyOpenDuringWeather"] then
-            local f = Library.Flags["OpenDuringWeatherList"]
-            local list = type(f) == "table" and f or {}
-            wOK = false
-            for _, w in ipairs(list) do if weatherIsActive(w) then wOK = true break end end
-        end
-
-        -- Auto Open Packs
-        if Library.Flags["AutoOpenPacks"] and wOK and remotes.OpenPack then
-            local delay = Library.Flags["PackDelay"] or 0
-            pcall(function()
-                local f = Library.Flags["SelectedPacks"]
-                local sel = type(f) == "table" and f or { tostring(f or "Bronze") }
-                if #sel > 0 then
-                    if openIdx > #sel then openIdx = 1 end
-                    local pack = sel[openIdx]
-                    openIdx = openIdx + 1
-                    local pd = getPlayerData()
-                    if pd and pd.packs and (pd.packs[pack] or 0) > 0 then
-                        remotes.OpenPack:FireServer(pack)
-                        stats.opened = stats.opened + 1
-                    end
-                end
-            end)
-            if delay > 0 then hwait(delay, delay + 0.1) end
-        end
-
-        -- Auto Buy Packs
-        if Library.Flags["AutoBuyPacks"] and remotes.BuyPack then
-            local delay = Library.Flags["BuyDelay"] or 0
-            local reserve = Library.Flags["CashReserve"] or 0
-            pcall(function()
-                local cash = getCash()
-                if Library.Flags["ReserveForRebirth"] then
-                    local rd = getRebirthRequirements()
-                    if rd and rd.CashRequired then reserve = math.max(reserve, rd.CashRequired) end
-                end
-                local f = Library.Flags["SelectedBuyPacks"]
-                local sel = type(f) == "table" and f or { "Bronze" }
-                if #sel == 0 then return end
-                if Library.Flags["SmartBuy"] then
-                    local sorted = {}
-                    for _, p in ipairs(sel) do table.insert(sorted, { n=p, p=packPrice(p) }) end
-                    table.sort(sorted, function(a, b) return a.p > b.p end)
-                    for _, e in ipairs(sorted) do
-                        if e.p > 0 and (cash - e.p) >= reserve then
-                            remotes.BuyPack:FireServer(e.n)
-                            stats.bought = stats.bought + 1
-                            break
-                        end
-                    end
-                else
-                    if buyIdx > #sel then buyIdx = 1 end
-                    local pn = sel[buyIdx] buyIdx = buyIdx + 1
-                    local pr = packPrice(pn)
-                    if pr > 0 and (cash - pr) >= reserve then
-                        remotes.BuyPack:FireServer(pn)
-                        stats.bought = stats.bought + 1
-                    end
-                end
-            end)
-            if delay > 0 then hwait(delay, delay + 0.15) end
-        end
-      end) -- end pcall(fastOK)
-      if not fastOK then
-          warn("[SSC] fast loop error: " .. tostring(fastErr))
-      end
-    end
-end)
-
-
--- =============================================
--- UI SECTIONS — professional 7-tab layout
--- =============================================
-
-print("[SSC] Building UI...")
-
-local function safeSection(name)
-    local ok, sec = pcall(function() return Setup:CreateSection(name) end)
-    if ok and sec then return sec end
-    warn("[SSC] Section failed: " .. tostring(name))
-    local stub = {} setmetatable(stub, { __index = function() return function() return stub end end })
-    return stub
-end
-
-local TabMain    = safeSection("🏠 Main")
-local TabPacks   = safeSection("📦 Packs")
-local TabAuto    = safeSection("⚡ Auto")
-local TabExtra   = safeSection("🏆 Extras")
-local TabClean   = safeSection("🧹 Cleanup")
-local TabHooks   = safeSection("📡 Webhooks")
-local TabStats   = safeSection("📊 Stats")
-
-
-local pList = getPackList()
-if #pList == 0 then pList = { "Bronze" } end
-
-
--- =============================================
--- 🏠 MAIN — high level controls + rebirth + safety
--- =============================================
-
-TabMain:createLabel({ Name = "⚽ Spin a Soccer Card", Special = true })
-TabMain:createLabel({ Name = "Contributor: aditya44325f  •  UI: Versus Airlines" })
-
-TabMain:createLabel({ Name = "⚠️ Global Controls", Special = true })
-
-TabMain:createToggle({
-    Name        = "🛑 Master Kill Switch",
-    flagName    = "MasterKillSwitch",
-    Flag        = false,
-    Description = "Pauses every auto loop instantly.",
-    Callback    = function(v) logEvent("Main", v and "Killed all loops" or "Resumed loops") end,
-})
-
-TabMain:createToggle({
-    Name        = "🛡️ Humanized Delays",
-    flagName    = "HumanizedDelays",
-    Flag        = true,
-    Description = "Adds jitter to timings so remote calls aren't perfectly periodic.",
-    Callback    = function() end,
-})
-
-TabMain:createToggle({
-    Name        = "🔁 Auto Rejoin on Kick",
-    flagName    = "AutoRejoin",
-    Flag        = false,
-    Description = "Auto-rejoins same place if you get kicked/disconnected.",
-    Callback    = function() end,
-})
-
-TabMain:createLabel({ Name = "💰 Cash & Rebirth", Special = true })
-
-TabMain:createToggle({
-    Name        = "💵 Auto Collect Cash",
-    flagName    = "AutoCollect",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabMain:createSlider({
-    Name        = "Collect Delay (s)",
-    flagName    = "CollectDelay",
-    value       = COLLECT_DEFAULT,
-    minValue    = 1, maxValue = 60,
-    Callback    = function() end,
-})
-
-TabMain:createToggle({
-    Name        = "🌟 Auto Rebirth",
-    flagName    = "AutoRebirth",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabMain:createToggle({
-    Name        = "🧠 Smart Rebirth Prep",
-    flagName    = "SmartRebirthPrep",
-    Flag        = true,
-    Description = "Equips best cards before each rebirth.",
-    Callback    = function() end,
-})
-
-TabMain:createSlider({
-    Name        = "Stop at Rebirth Level (0=∞)",
-    flagName    = "RebirthCap",
-    value       = 0, minValue = 0, maxValue = 999,
-    Callback    = function() end,
-})
-
-TabMain:createToggle({
-    Name        = "💥 Force Rebirth",
-    flagName    = "ForceRebirth",
-    Flag        = false,
-    Description = "Fires rebirth regardless of requirements.",
-    Warning     = function() return "May rebirth before requirements are met." end,
-    WarnIf      = function() return Library.Flags["ForceRebirth"] == true end,
-    Callback    = function() end,
-})
-
-TabMain:createLabel({ Name = "🌐 Server Hop", Special = true })
-
-TabMain:createDropdown({
-    Name        = "Hop Mode",
-    flagName    = "HopMode",
-    Flag        = { "low_players" },
-    List        = { "low_players","low_ping","random" },
-    multi       = false,
-    Callback    = function() end,
-})
-
-TabMain:createSlider({
-    Name        = "Auto-Hop Every N Rebirths (0=off)",
-    flagName    = "HopEveryRebirths",
-    value       = 0, minValue = 0, maxValue = 50,
-    Callback    = function() end,
-})
-
-TabMain:createButton({
-    Name        = "🚀 Hop Now",
-    Callback    = function()
-        local f = Library.Flags["HopMode"]
-        serverHop(type(f)=="table" and f[1] or f or "low_players")
-    end,
-})
-
-
--- =============================================
--- 📦 PACKS — open / buy / sell / equip / delete
--- =============================================
-
-TabPacks:createLabel({ Name = "📤 Auto Open", Special = true })
-
-TabPacks:createToggle({
-    Name        = "Auto Open Packs",
-    flagName    = "AutoOpenPacks",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-local packDD = TabPacks:createDropdown({
-    Name        = "Select Packs to Open",
-    flagName    = "SelectedPacks",
-    Flag        = { pList[1] },
-    List        = pList,
-    multi       = true,
-    Callback    = function() end,
-})
-
-TabPacks:createButton({
-    Name        = "Select ALL Packs",
-    Callback    = function()
-        pcall(function() packDD:Set(pList) end)
-        Library.Flags["SelectedPacks"] = pList
-        openIdx = 1
-    end,
-})
-
-TabPacks:createSlider({
-    Name        = "Open Delay (s, 0=instant)",
-    flagName    = "PackDelay",
-    value       = 0, minValue = 0, maxValue = 5,
-    Callback    = function() end,
-})
-
-TabPacks:createLabel({ Name = "🛒 Auto Buy", Special = true })
-
-TabPacks:createToggle({
-    Name        = "Auto Buy Packs",
-    flagName    = "AutoBuyPacks",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabPacks:createToggle({
-    Name        = "Smart Buy (Highest Affordable)",
-    flagName    = "SmartBuy",
-    Flag        = false,
-    Description = "Buys the most expensive pack you can afford from the list.",
-    Callback    = function() end,
-})
-
-TabPacks:createSlider({
-    Name        = "Cash Reserve",
-    flagName    = "CashReserve",
-    value       = 0, minValue = 0, maxValue = 1000000000,
-    Description = "Never spend below this balance.",
-    Callback    = function() end,
-})
-
-TabPacks:createToggle({
-    Name        = "Reserve Cash for Next Rebirth",
-    flagName    = "ReserveForRebirth",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-local buyDD = TabPacks:createDropdown({
-    Name        = "Select Packs to Buy",
-    flagName    = "SelectedBuyPacks",
-    Flag        = { pList[1] },
-    List        = pList,
-    multi       = true,
-    Callback    = function() end,
-})
-
-TabPacks:createButton({
-    Name        = "Select ALL Buy Packs",
-    Callback    = function()
-        pcall(function() buyDD:Set(pList) end)
-        Library.Flags["SelectedBuyPacks"] = pList
-        buyIdx = 1
-    end,
-})
-
-TabPacks:createSlider({
-    Name        = "Buy Delay (s)",
-    flagName    = "BuyDelay",
-    value       = 0, minValue = 0, maxValue = 900,
-    Callback    = function() end,
-})
-
-TabPacks:createLabel({ Name = "💸 Sell & Equip", Special = true })
-
-TabPacks:createToggle({
-    Name        = "Auto Sell Below Rarity",
-    flagName    = "AutoSell",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabPacks:createDropdown({
-    Name        = "Sell Below:",
-    flagName    = "SellThreshold",
-    Flag        = { SELL_DEFAULT },
-    List        = rarityList,
-    multi       = false,
-    Callback    = function() end,
-})
-
-TabPacks:createDropdown({
-    Name        = "Protected Cards (Never Sell)",
-    flagName    = "ProtectedCards",
-    Flag        = {},
-    List        = cardIdList,
-    multi       = true,
-    Description = "Whitelisted cards (Legendary+ shown, capped at 300).",
-    Callback    = function() end,
-})
-
-TabPacks:createToggle({
-    Name        = "Keep One of Each (Collector)",
-    flagName    = "KeepOneOfEach",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabPacks:createToggle({
-    Name        = "Auto Equip Best Cards",
-    flagName    = "AutoEquip",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabPacks:createToggle({
-    Name        = "Auto Lock New Rares",
-    flagName    = "AutoLock",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabPacks:createDropdown({
-    Name        = "Lock at or Above:",
-    flagName    = "AutoLockRarity",
-    Flag        = { "Mythic" },
-    List        = rarityList,
-    multi       = false,
-    Callback    = function() end,
-})
-
-TabPacks:createLabel({ Name = "🗑️ Cleanup", Special = true })
-
-TabPacks:createToggle({
-    Name        = "Auto Delete Selected Packs",
-    flagName    = "AutoDeletePacks",
-    Flag        = false,
-    Warning     = function() return "Deleted packs cannot be recovered." end,
-    WarnIf      = function() return Library.Flags["AutoDeletePacks"] == true end,
-    Callback    = function() end,
-})
-
-TabPacks:createDropdown({
-    Name        = "Packs to Delete",
-    flagName    = "DeletePacksList",
-    Flag        = {},
-    List        = pList,
-    multi       = true,
-    Callback    = function() end,
-})
-
-
--- =============================================
--- ⚡ AUTO — daily / spin / index / gems / codes / hunt
--- =============================================
-
-TabAuto:createLabel({ Name = "🎁 Rewards", Special = true })
-
-TabAuto:createToggle({
-    Name        = "📅 Auto Daily Reward",
-    flagName    = "AutoDaily",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabAuto:createToggle({
-    Name        = "💤 Auto Offline Reward",
-    flagName    = "AutoOffline",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabAuto:createToggle({
-    Name        = "🎡 Auto Spin Wheel",
-    flagName    = "AutoSpin",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabAuto:createToggle({
-    Name        = "📖 Auto Index Gems",
-    flagName    = "AutoIndex",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabAuto:createLabel({ Name = "💎 Gem Shop", Special = true })
-
-TabAuto:createToggle({
-    Name        = "Auto Buy Gem Item",
-    flagName    = "AutoGemShop",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabAuto:createDropdown({
-    Name        = "Item",
-    flagName    = "GemShopItem",
-    Flag        = { "Lucky Item" },
-    List        = { "Lucky Item","Auto Equip Best","Auto Skip","Inventory +500","Scarlet Item" },
-    multi       = false,
-    Callback    = function() end,
-})
-
-TabAuto:createSlider({
-    Name        = "Keep Min Gems",
-    flagName    = "MinGems",
-    value       = MIN_GEMS_DEFAULT, minValue = 0, maxValue = 10000,
-    Callback    = function() end,
-})
-
-TabAuto:createLabel({ Name = "🎯 Hunting Mode", Special = true })
-TabAuto:createLabel({ Name = "Opens packs until target drops, then auto-locks and stops." })
-
-TabAuto:createToggle({
-    Name        = "Hunting Mode",
-    flagName    = "HuntingMode",
-    Flag        = false,
-    Callback    = function(v) if v then huntFound = false end end,
-})
-
-TabAuto:createDropdown({
-    Name        = "Target Card",
-    flagName    = "HuntTarget",
-    Flag        = { cardIdList[1] or "" },
-    List        = cardIdList,
-    multi       = false,
-    Callback    = function() end,
-})
-
-TabAuto:createButton({
-    Name        = "Reset Hunt",
-    Callback    = function() huntFound = false notify("Hunt", "Reset.", "info") end,
-})
-
-TabAuto:createLabel({ Name = "🌦️ Weather Gating", Special = true })
-
-TabAuto:createToggle({
-    Name        = "Pause Selling on Lucky Weather",
-    flagName    = "PauseSellOnLucky",
-    Flag        = true,
-    Callback    = function() end,
-})
-
-TabAuto:createToggle({
-    Name        = "Only Open Packs During Weather",
-    flagName    = "OnlyOpenDuringWeather",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabAuto:createDropdown({
-    Name        = "Open During",
-    flagName    = "OpenDuringWeatherList",
-    Flag        = { "Lucky" },
-    List        = { "Lucky","Golden Hour","Mythic Surge","Storm","Eclipse","Blizzard","Heatwave","Solar Flare","Aurora","Meteor Shower" },
-    multi       = true,
-    Callback    = function() end,
-})
-
-
--- =============================================
--- 🏆 EXTRAS — Wishing | Trophies | Tournament | Potions
--- =============================================
-
-------------------------------------------------------------
--- ✨  WISHING
-------------------------------------------------------------
-TabExtra:createLabel({ Name = "✨ Wishing", Special = true })
-
-TabExtra:createToggle({
-    Name        = "Auto Perform Wish",
-    flagName    = "AutoWish",
-    Flag        = false,
-    Description = "Invokes PerformWish (RemoteFunction) every 5 seconds.",
-    Callback    = function() end,
-})
-
-TabExtra:createButton({
-    Name = "✨ Perform Wish Now",
-    Callback = function()
-        if not remotes.PerformWish then notify("Wish", "PerformWish remote missing.", "warning") return end
-        pcall(function() remotes.PerformWish:InvokeServer() end)
-        stats.wishes = stats.wishes + 1
-        logEvent("Wish", "Manual wish fired")
-    end,
-})
-
-------------------------------------------------------------
--- 🏆  TROPHIES
-------------------------------------------------------------
-TabExtra:createLabel({ Name = "🏆 Trophies", Special = true })
-
-TabExtra:createToggle({
-    Name        = "Auto Craft Selected Trophies",
-    flagName    = "AutoCraftTrophy",
-    Flag        = false,
-    Description = "Crafts each trophy in the list below every 15s (skips silently if requirements aren't met).",
-    Callback    = function() end,
-})
-
-TabExtra:createDropdown({
-    Name        = "Trophies to Craft",
-    flagName    = "CraftTrophyList",
-    Flag        = { trophyNameList[1] },
-    List        = trophyNameList,
-    multi       = true,
-    Description = "Multi-select. Sorted by rarity (highest first).",
-    Callback    = function() end,
-})
-
-TabExtra:createButton({
-    Name = "🛠️ Craft Selected Now",
-    Callback = function()
-        if not remotes.CraftTrophy then notify("Trophy", "CraftTrophy missing.", "warning") return end
-        local f = Library.Flags["CraftTrophyList"]
-        local sel = type(f) == "table" and f or {}
-        if #sel == 0 then notify("Trophy", "No trophies selected.", "warning") return end
-        for _, label in ipairs(sel) do
-            local name = trophyLabelToName[label] or label
-            pcall(function() remotes.CraftTrophy:FireServer(name) end)
-            stats.trophiesCrafted = stats.trophiesCrafted + 1
-        end
-        notify("Trophy", "Fired " .. #sel .. " craft attempts.", "info")
-    end,
-})
-
-TabExtra:createToggle({
-    Name        = "Auto Apply Trophies to Best Plots",
-    flagName    = "AutoApplyTrophies",
-    Flag        = false,
-    Description = "ApplyTrophy(name, plotNumber) — highest-tier trophy → highest-income plot.",
-    Callback    = function() end,
-})
-
-------------------------------------------------------------
--- 🥇  TOURNAMENT
-------------------------------------------------------------
-TabExtra:createLabel({ Name = "🥇 Tournament", Special = true })
-
-TabExtra:createToggle({
-    Name        = "Auto Join Tournament",
-    flagName    = "AutoJoinTournament",
-    Flag        = false,
-    Description = "Tournament('join') every 15s when not already in one.",
-    Callback    = function() end,
-})
-
-TabExtra:createToggle({
-    Name        = "Auto Equip Best Team",
-    flagName    = "AutoEquipBestTourney",
-    Flag        = false,
-    Description = "Tournament('equip_best') every 30s.",
-    Callback    = function() end,
-})
-
-TabExtra:createToggle({
-    Name        = "Webhook on Tournament Finish",
-    flagName    = "WebhookTournament",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-local lbl_t_state = TabExtra:createLabel({ Name = "Status: ⚪ idle" })
-local lbl_t_join  = TabExtra:createLabel({ Name = "Joined: 0" })
-local lbl_t_win   = TabExtra:createLabel({ Name = "Top-3 finishes: 0" })
-local lbl_t_place = TabExtra:createLabel({ Name = "Last placement: --" })
-
-------------------------------------------------------------
--- 🧪  WEATHER POTIONS
-------------------------------------------------------------
-TabExtra:createLabel({ Name = "🧪 Weather Potions", Special = true })
-
-TabExtra:createToggle({
-    Name        = "Auto Use Potion",
-    flagName    = "AutoUsePotion",
-    Flag        = false,
-    Description = "Uses selected potion every 300s (matches game cooldown).",
-    Callback    = function() end,
-})
-
-TabExtra:createDropdown({
-    Name        = "Potion",
-    flagName    = "PotionType",
-    Flag        = { potionList[1] },
-    List        = potionList,
-    multi       = false,
-    Callback    = function() end,
-})
-
-TabExtra:createButton({
-    Name = "🧪 Use Potion Now",
-    Callback = function()
-        if not remotes.UsePotion then notify("Potion", "UsePotion remote missing.", "warning") return end
-        local f = Library.Flags["PotionType"]
-        local p = (type(f)=="table" and f[1]) or f or potionList[1]
-        pcall(function() remotes.UsePotion:FireServer(p) end)
-        logEvent("Potion", "Used " .. tostring(p))
-        notify("Potion", "Used " .. tostring(p), "info")
-    end,
-})
-
-
--- =============================================
--- 🧹 CLEANUP — native pack settings + UI suppression
--- =============================================
-
-TabClean:createLabel({ Name = "🎬 Native Pack Animation", Special = true })
-TabClean:createLabel({ Name = "Server-side toggle — no client hacks, no blur, no UI damage." })
-
-TabClean:createToggle({
-    Name        = "Hide Pack Animation (Native)",
-    flagName    = "PackHideAnim",
-    Flag        = false,
-    Description = "Fires PackSettings('packHideAnimation', true). The game itself skips the reveal animation.",
-    Callback    = function() syncPackSettings() end,
-})
-
--- NOTE: The native PackAutoOpen toggle is intentionally NOT exposed here.
--- It's much slower than the script's own AutoOpenPacks loop (Packs tab),
--- because the game waits for each reveal cycle before queuing the next pack.
-
-TabClean:createLabel({ Name = "💰 Earnings Floats", Special = true })
-
-TabClean:createToggle({
-    Name        = "Hide Floating +$ Toasts",
-    flagName    = "HideEarningsFloats",
-    Flag        = false,
-    Description = "Hides only the '+$58.50M' floating labels inside the Notification GUI.",
-    Callback    = function() end,
-})
-
-TabClean:createLabel({ Name = "🔕 General Suppression", Special = true })
-
-TabClean:createToggle({
-    Name        = "Disable All Notifications",
-    flagName    = "DisableNotifs",
-    Flag        = false,
-    Callback    = function() end,
-})
-
-TabClean:createToggle({
-    Name        = "Block Purchase Popups",
-    flagName    = "DisablePopups",
-    Flag        = false,
-    Description = "Blocks Robux/gamepass/booth prompts.",
-    Callback    = function(v) _G.SSC_DisablePopups = v end,
-})
-
-TabClean:createToggle({
-    Name        = "Hide HUD",
-    flagName    = "HideHUD",
-    Flag        = false,
-    Callback    = function(v)
-        local pgui = client:FindFirstChild("PlayerGui")
-        if pgui then local hud = pgui:FindFirstChild("HUD") if hud then hud.Enabled = not v end end
-    end,
-})
-
-
--- =============================================
--- 📡 WEBHOOKS
--- =============================================
-
-TabHooks:createLabel({ Name = "Discord Integration", Special = true })
-
-TabHooks:createInputBox({
-    Name = "Webhook URL", flagName = "WebhookURL", Flag = "",
-    Callback = function(v) getgenv().WebhookURL = v end,
-})
-
-TabHooks:createInputBox({
-    Name = "Discord User ID (for ping)", flagName = "WebhookPingID", Flag = "",
-    Callback = function(v) getgenv().WebhookPingID = tostring(v):gsub("[^%d]", "") end,
-})
-
-TabHooks:createLabel({ Name = "What to Send", Special = true })
-
-TabHooks:createToggle({
-    Name = "✨ Rare Card Rolls", flagName = "WebhookRareRolls", Flag = false,
-    Callback = function() end,
-})
-
-TabHooks:createDropdown({
-    Name = "Minimum Rarity", flagName = "WebhookRarityThresh",
-    Flag = { RARITY_THRESH_DEFAULT }, List = rarityList, multi = false,
-    Callback = function() end,
-})
-
-TabHooks:createToggle({
-    Name = "📊 Periodic Stats", flagName = "WebhookStats", Flag = false,
-    Callback = function() end,
-})
-
-TabHooks:createSlider({
-    Name = "Stats Frequency (min)", flagName = "WebhookStatsDelay",
-    value = STATS_DELAY_DEFAULT, minValue = 1, maxValue = 60,
-    Callback = function() end,
-})
-
-TabHooks:createToggle({
-    Name = "⏰ Hourly Summary", flagName = "WebhookHourly", Flag = false,
-    Callback = function() end,
-})
-
-TabHooks:createToggle({
-    Name = "🌟 Rebirth Milestones", flagName = "WebhookMilestones", Flag = false,
-    Callback = function() end,
-})
-
-TabHooks:createToggle({
-    Name = "🔔 In-Game Notifications (weather/events/admin)",
-    flagName = "WebhookGameNotifs", Flag = false,
-    Description = "Mirrors every Notification toast (Solar Eclipse, admin msgs, etc.) to Discord.",
-    Callback = function() end,
-})
-
-TabHooks:createButton({
-    Name = "🧪 Send Test Webhook",
-    Callback = function()
-        if (getgenv().WebhookURL or "") == "" then notify("Webhook", "No URL set.", "warning") return end
-        dispatchWebhook({ embeds = {{
-            title = "🧪 Test", description = "Spin a Soccer Card webhook is working.",
-            color = 5763719,
-            author = { name = client.Name, icon_url = string.format(ROBLOX_AVATAR, client.UserId) },
-            footer = { text = "Spin a Soccer Card" },
-        }}})
-        notify("Webhook", "Sent.", "info")
-    end,
-})
-
-
--- =============================================
--- 📊 STATS
--- =============================================
-
-TabStats:createLabel({ Name = "Live Session", Special = true })
-local lbl_cash    = TabStats:createLabel({ Name = "💰 Cash: $0" })
-local lbl_gems    = TabStats:createLabel({ Name = "💎 Gems: 0" })
-local lbl_reb     = TabStats:createLabel({ Name = "🌟 Rebirth: 0" })
-local lbl_open    = TabStats:createLabel({ Name = "📦 Opened: 0" })
-local lbl_bought  = TabStats:createLabel({ Name = "🛒 Bought: 0" })
-local lbl_sold    = TabStats:createLabel({ Name = "💸 Sold: 0" })
-local lbl_lock    = TabStats:createLabel({ Name = "🔒 Locked: 0" })
-local lbl_wish    = TabStats:createLabel({ Name = "✨ Wishes: 0" })
-local lbl_troph   = TabStats:createLabel({ Name = "🏆 Trophies: 0" })
-local lbl_hop     = TabStats:createLabel({ Name = "🌐 Hops: 0" })
-local lbl_weather = TabStats:createLabel({ Name = "🌦️ Weather: None" })
-
-TabStats:createLabel({ Name = "Rates", Special = true })
-local lbl_uptime  = TabStats:createLabel({ Name = "⏱️ Uptime: 00:00:00" })
-local lbl_cashHr  = TabStats:createLabel({ Name = "Cash/hr: $0" })
-local lbl_gemsHr  = TabStats:createLabel({ Name = "Gems/hr: 0" })
-local lbl_eta     = TabStats:createLabel({ Name = "ETA Next Rebirth: --" })
-
-TabStats:createLabel({ Name = "Rarity Distribution", Special = true })
-local lbl_rolls   = TabStats:createLabel({ Name = "(no rolls yet)" })
-
-TabStats:createButton({
-    Name = "🔄 Reset Stats",
-    Callback = function()
-        stats = {
-            opened=0,bought=0,sold=0,rebirths=0,gemBuys=0,collects=0,
-            locked=0,wishes=0,trophiesCrafted=0,hopCount=0,
-            sessionStart=os.time(),cashStart=nil,gemsStart=nil,rebirthStart=nil,
-            rarityRolls={},lastRebirthTs=os.time(),
-        }
-        tournamentState = { inTournament=false,placement=nil,startedAt=nil,joins=0,wins=0,lastTick=0 }
-        notify("Stats", "Reset.", "info")
-    end,
-})
-
-local lastUI = 0
-RunService.Heartbeat:Connect(function()
-    local now = os.clock()
-    if now - lastUI < 0.5 then return end
-    lastUI = now
-    pcall(function()
-        if not (lbl_cash and lbl_cash.Set) then return end
-        local elapsed = math.max(1, os.time() - stats.sessionStart)
-        local cashNow = getCash()
-        local gemsNow = getGems()
-        local cashGain = cashNow - (stats.cashStart or cashNow)
-        local gemsGain = gemsNow - (stats.gemsStart or gemsNow)
-
-        lbl_cash:Set("💰 Cash: $" .. formatCash(cashNow))
-        lbl_gems:Set("💎 Gems: " .. math.floor(gemsNow))
-        lbl_reb:Set("🌟 Rebirth: " .. getRebirthLevel())
-        lbl_open:Set("📦 Opened: " .. stats.opened)
-        lbl_bought:Set("🛒 Bought: " .. stats.bought)
-        lbl_sold:Set("💸 Sold: " .. stats.sold)
-        lbl_lock:Set("🔒 Locked: " .. stats.locked)
-        lbl_wish:Set("✨ Wishes: " .. stats.wishes)
-        lbl_troph:Set("🏆 Trophies: " .. stats.trophiesCrafted)
-        lbl_hop:Set("🌐 Hops: " .. stats.hopCount)
-        lbl_weather:Set("🌦️ Weather: " .. getActiveWeathers())
-        lbl_uptime:Set("⏱️ Uptime: " .. formatDuration(elapsed))
-        lbl_cashHr:Set("Cash/hr: $" .. formatCash(cashGain/elapsed*3600))
-        lbl_gemsHr:Set("Gems/hr: " .. formatCash(gemsGain/elapsed*3600))
-
-        local rd = getRebirthRequirements()
-        if rd and rd.CashRequired then
-            local need = rd.CashRequired - cashNow
-            if need <= 0 then lbl_eta:Set("ETA Next Rebirth: ✅ ready")
-            else
-                local rate = cashGain / elapsed
-                if rate > 0 then lbl_eta:Set("ETA Next Rebirth: " .. formatDuration(need/rate))
-                else lbl_eta:Set("ETA Next Rebirth: --") end
-            end
-        end
-
-        local parts = {}
-        for _, r in ipairs(rarityList) do
-            local c = stats.rarityRolls[r]
-            if c and c > 0 then table.insert(parts, r .. ": " .. c) end
-        end
-        lbl_rolls:Set(#parts > 0 and table.concat(parts, "  •  ") or "(no rolls yet)")
-
-        -- tournament
-        if lbl_t_state and lbl_t_state.Set then
-            lbl_t_state:Set("Status: " .. (tournamentState.inTournament and "🟢 in tournament" or "⚪ idle"))
-            lbl_t_join:Set("Joined: " .. tournamentState.joins)
-            lbl_t_win:Set("Top-3 finishes: " .. tournamentState.wins)
-            lbl_t_place:Set("Last placement: " .. tostring(tournamentState.placement or "--"))
-        end
-    end)
-end)
-
-
--- [ DONE ]
-task.delay(2, function() pcall(syncPackSettings) end)
-
--- Diagnostic: report which key remotes resolved (helps debug "X doesn't work")
-do
-    local report = { "[SSC] Remote resolution report:" }
-    local function chk(name)
-        local r = remotes[name]
-        local cls = "nil"
-        if r then pcall(function() cls = r.ClassName end) end
-        table.insert(report, "  " .. name .. " = " .. tostring(r ~= nil) .. " (" .. cls .. ")")
-    end
-    for _, n in ipairs({
-        "OpenPack","BuyPack","BuyGemShopItem","SellCards","EquipCard","CollectSlot",
-        "Rebirth","PerformWish","CraftTrophy","ApplyTrophy","DestroyTrophy",
-        "Tournament","UsePotion","PackSettings",
-    }) do chk(n) end
-    print(table.concat(report, "\n"))
-end
-
-print("[SSC] Loaded. " .. #cardIdList .. " cards, " .. #trophyNameList .. " trophies, " .. #potionList .. " potions.")
-logEvent("Init", "Spin a Soccer Card loaded.")
