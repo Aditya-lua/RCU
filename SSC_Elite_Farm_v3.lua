@@ -37,45 +37,63 @@ end)
 
 -----------------------------------------------------------------
 
-local function interval(tag, flag, delayTime, callback)
+-- interval: registers a heartbeat-driven loop ONCE at script load.
+-- The loop is gated by the flag (or runs always if flag==nil), so toggling
+-- the UI on/off instantly enables/disables the loop without needing the
+-- Callback to re-register anything.
+--
+-- Signature:
+--   interval(tag, flag, delayTime, callback, opts?)
+--   interval(tag, flag, dynamicDelayFn, callback, opts?)   -- delay can be a function returning a number
+--
+-- `flag` may be nil → loop runs unconditionally (used for housekeeping).
+-- `delayTime` may be a number OR a function returning a number (dynamic).
+local function interval(tag, flag, delayTime, callback, opts)
     Library:CleanupConnectionsByTag(tag)
-    delayTime = math.max(tonumber(delayTime) or 0.1, 0.05)
-    if not Library.Flags[flag] then
-        return
+
+    local isDynamicDelay = type(delayTime) == "function"
+    local function resolveDelay()
+        local d
+        if isDynamicDelay then
+            local ok, v = pcall(delayTime)
+            d = ok and tonumber(v) or 0.1
+        else
+            d = tonumber(delayTime) or 0.1
+        end
+        if opts and tonumber(opts.minDelay) then
+            d = math.max(d, opts.minDelay)
+        end
+        return math.max(d, 0.03)
     end
 
     local last = 0
     local running = false
     local slowWarnAt = 0
+
     local conn = RunService.Heartbeat:Connect(function()
-        if not Library.Flags[flag] then
-            Library:CleanupConnectionsByTag(tag)
-            return
-        end
+        -- Gate by flag (nil flag = always run)
+        if flag ~= nil and not Library.Flags[flag] then return end
 
         local current = os.clock()
-        if running or current - last < delayTime then
+        if running or current - last < resolveDelay() then
             return
         end
 
         last = current
         running = true
 
-        local spawnFn = task and task.spawn or spawn
-        spawnFn(function()
+        task.spawn(function()
             local startedAt = os.clock()
             local ok, err = pcall(callback)
             local elapsed = os.clock() - startedAt
 
             if not ok then
                 warn("[interval:" .. tostring(tag) .. "]", err)
-            elseif elapsed > 10 and os.clock() - slowWarnAt > 5 then -- 10 is if the interval took longer than 10 seconds to work.
+            elseif elapsed > 10 and os.clock() - slowWarnAt > 5 then
                 slowWarnAt = os.clock()
-                warn(string.format("[Versus] slow interval %s took %.3fs", tostring(tag), elapsed))
+                warn(string.format("[SSC] slow interval %s took %.3fs", tostring(tag), elapsed))
             end
 
-            local waitFn = task and task.wait or wait
-            waitFn()
             running = false
         end)
     end)
@@ -1716,4 +1734,31 @@ do
             end)
         end
     end
+end
+
+
+-- =============================================
+-- STARTUP DIAGNOSTIC
+-- =============================================
+do
+    local report = { "[SSC] Remote resolution:" }
+    local function chk(name, t)
+        local r = (t or remotes)[name]
+        local cls = "nil"
+        if r then pcall(function() cls = r.ClassName end) end
+        table.insert(report, "  " .. name .. " = " .. tostring(r ~= nil) .. " (" .. cls .. ")")
+    end
+    for _, n in ipairs({
+        "OpenPack","BuyPack","SellCards","CollectSlot","EquipCard","DeletePacks",
+        "Rebirth","BuyGemShopItem","ClaimAllIndexGems","DailyReward","OfflineReward",
+        "SpinWheel","RedeemCode",
+        "CraftTrophy","ApplyTrophy","DestroyTrophy",
+        "Tournament","UsePotion","PackSettings","Wish",
+    }) do chk(n) end
+    chk("PerformWish", funcs)
+    chk("SpinWheelData", funcs)
+    print(table.concat(report, "\n"))
+    print(string.format("[SSC] Loaded successfully. %d trophies, %d potions, %d packs available.",
+        #trophyLabels, #potionList, #packList))
+    notify("Spin a Soccer Card", "Script loaded — all auto loops armed.", "info")
 end
