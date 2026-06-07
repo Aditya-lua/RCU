@@ -261,6 +261,8 @@ local TrophyConfig = requirePath("TrophyConfig", "Source", "Shared", "Configs", 
 local PotionConfig = requirePath("PotionConfig", "Source", "Shared", "Configs", "PotionConfig") or {}
 local TournamentConfig = requirePath("TournamentConfig", "Source", "Shared", "Configs", "TournamentConfig") or {}
 local MutationConfig = requirePath("MutationConfig", "Source", "Shared", "Configs", "MutationConfig") or {}
+local TournamentClock = requirePath("TournamentClock", "Source", "Shared", "Helpers", "TournamentClock")
+local WeatherStore = requirePath("WeatherStore", "Source", "Shared", "State", "WeatherStore")
 
 local stats = {
     opened = 0,
@@ -642,28 +644,74 @@ local function equipBest()
     return equippedCount > 0
 end
 
+-- =============================================
+-- ROLL UI NUKER — kills AutoSkip/AutoOpen buttons + pack reveal GUI
+-- the INSTANT they spawn. Runs in three ways:
+--   1. Continuous walker (every 0.05s) — fallback safety net
+--   2. DescendantAdded listener on PlayerGui — catches anything new instantly
+--   3. ChildAdded on each ScreenGui — catches reveal frames as they mount
+-- =============================================
+
+local BUTTON_NAMES_TO_KILL = {
+    AutoSkip = true, AutoOpen = true,
+    autoSkip = true, autoOpen = true,
+    ["Auto Skip"] = true, ["Auto Open"] = true,
+}
+
+local REVEAL_GUI_NAME_PATTERNS = {
+    "packopen", "openpack", "packreveal", "cardreveal", "revealpack",
+    "reveal", "packopening", "openinganim", "packanim",
+}
+
+local function nameLooksLikeRevealGui(name)
+    if type(name) ~= "string" then return false end
+    local lower = string.lower(name)
+    for _, p in ipairs(REVEAL_GUI_NAME_PATTERNS) do
+        if string.find(lower, p, 1, true) then return true end
+    end
+    return false
+end
+
+local function tryKillBadDescendant(desc)
+    if not desc or not desc.Parent then return end
+    -- 1. Buttons we want gone
+    if BUTTON_NAMES_TO_KILL[desc.Name] then
+        pcall(function() desc:Destroy() end)
+        return
+    end
+    -- 2. Reveal screen GUIs (silent open)
+    if desc:IsA("ScreenGui") and Library.Flags["SilentOpenPacks"] and nameLooksLikeRevealGui(desc.Name) then
+        pcall(function() desc.Enabled = false end)
+        pcall(function() desc:Destroy() end)
+        return
+    end
+end
+
 local function destroyRollUIs()
     pcall(function()
         local playerGui = client:FindFirstChild("PlayerGui")
         if not playerGui then return end
-
-        local children = playerGui:GetChildren()
-        local container = children[65]
-        if not container then return end
-
-        local frame = container:FindFirstChild("Frame")
-        if not frame then return end
-
-        local buttons = frame:FindFirstChild("ButtonsContainer")
-        if not buttons then return end
-
-        local autoSkip = buttons:FindFirstChild("AutoSkip")
-        local autoOpen = buttons:FindFirstChild("AutoOpen")
-
-        if autoSkip then autoSkip:Destroy() end
-        if autoOpen then autoOpen:Destroy() end
+        for _, gui in ipairs(playerGui:GetDescendants()) do
+            tryKillBadDescendant(gui)
+        end
     end)
 end
+
+-- Hook DescendantAdded once for instant kills
+local _rollUIHooked = false
+local function installRollUIHook()
+    if _rollUIHooked then return end
+    _rollUIHooked = true
+    local playerGui = client:WaitForChild("PlayerGui", 10)
+    if not playerGui then return end
+    playerGui.DescendantAdded:Connect(function(d)
+        -- Defer one frame so name/parent are stable
+        task.defer(tryKillBadDescendant, d)
+    end)
+    -- Also hammer everything that exists right now
+    destroyRollUIs()
+end
+installRollUIHook()
 
 local function dispatchWebhook(payload)
     if webhookUrl == "" or not httpRequest then return end
@@ -849,7 +897,7 @@ TabFarm:createDropdown({
     flagName = "SellThreshold",
     Flag = { SELL_DEFAULT },
     List = rarityList,
-    multi = false,
+    multi = true,
     Description = "Cards under this rarity will be sold.",
     Callback = function() end,
 })
@@ -868,6 +916,14 @@ TabFarm:createToggle({
     flagName = "AutoOpenPacks",
     Flag = false,
     Description = "Opens selected packs from your inventory.",
+    Callback = function() end,
+})
+
+TabFarm:createToggle({
+    Name = "🤫 Silent Open (No Cutscene)",
+    flagName = "SilentOpenPacks",
+    Flag = true,
+    Description = "Destroys pack-reveal GUIs the instant they spawn. Packs open in background — no animation, no blur.",
     Callback = function() end,
 })
 
@@ -951,7 +1007,7 @@ TabFarm:createDropdown({
     flagName = "GemShopItemUI",
     Flag = { "Lucky Item" },
     List = { "Lucky Item", "Auto Equip Best", "Auto Skip", "Inventory +500", "Scarlet Item" },
-    multi = false,
+    multi = true,
     Description = "The gem shop item to buy.",
     Callback = function() end,
 })
@@ -1027,13 +1083,22 @@ TabWebhook:createInputBox({
     end,
 })
 
-TabWebhook:createLabel({ Name = "Rare Card Tracker", Special = true })
-TabWebhook:createToggle({ Name = "Enable Rare Roll Webhook", flagName = "WebhookRareRolls", Flag = false, Description = "Sends a webhook for cards at or above the selected rarity.", Callback = function() end })
-TabWebhook:createDropdown({ Name = "Minimum Rarity to Log", flagName = "WebhookRarityThresh", Flag = { RARITY_THRESH_DEFAULT }, List = rarityList, multi = false, Description = "Minimum rarity for rare-roll webhook posts.", Callback = function() end })
+TabWebhook:createLabel({ Name = "🎴 Rare Cards", Special = true })
+TabWebhook:createToggle({ Name = "Rare Roll Webhook", flagName = "WebhookRareRolls", Flag = false, Description = "Sends a webhook for cards at or above the selected rarity.", Callback = function() end })
+TabWebhook:createDropdown({ Name = "Minimum Rarity to Log", flagName = "WebhookRarityThresh", Flag = { RARITY_THRESH_DEFAULT }, List = rarityList, multi = true, Description = "Minimum rarity (multi-select; first selected is used).", Callback = function() end })
 
-TabWebhook:createLabel({ Name = "Automated Analytics", Special = true })
-TabWebhook:createToggle({ Name = "Enable Stats Webhook", flagName = "WebhookStats", Flag = false, Description = "Sends session stats to your webhook.", Callback = function() end })
-TabWebhook:createSlider({ Name = "Stats Frequency (Minutes)", flagName = "WebhookStatsDelay", value = STATS_DELAY_DEFAULT, minValue = 1, maxValue = 60, Description = "Minutes between stats webhook posts.", Callback = function() end })
+TabWebhook:createLabel({ Name = "📊 Periodic Stats", Special = true })
+TabWebhook:createToggle({ Name = "Periodic Stats Webhook", flagName = "WebhookStats", Flag = false, Description = "Sends session stats every N minutes.", Callback = function() end })
+TabWebhook:createSlider({ Name = "Stats Frequency (Minutes)", flagName = "WebhookStatsDelay", value = STATS_DELAY_DEFAULT, minValue = 1, maxValue = 60, Description = "Minutes between stats posts.", Callback = function() end })
+TabWebhook:createToggle({ Name = "Include Equipped Cards in Stats", flagName = "WebhookIncludeEquipped", Flag = true, Description = "List all equipped cards (with rarity) in the stats embed.", Callback = function() end })
+
+TabWebhook:createLabel({ Name = "🥇 Tournament", Special = true })
+TabWebhook:createToggle({ Name = "Tournament Finish Webhook", flagName = "WebhookTournament", Flag = false, Description = "Embed when a tournament you're in ends.", Callback = function() end })
+TabWebhook:createToggle({ Name = "Tournament Join Webhook", flagName = "WebhookTournamentJoin", Flag = false, Description = "Embed every time auto-join fires.", Callback = function() end })
+
+TabWebhook:createLabel({ Name = "🌟 Milestones", Special = true })
+TabWebhook:createToggle({ Name = "Rebirth Milestone Webhook", flagName = "WebhookRebirth", Flag = false, Description = "Embed every time you rebirth.", Callback = function() end })
+TabWebhook:createToggle({ Name = "Trophy Crafted Webhook", flagName = "WebhookTrophy", Flag = false, Description = "Embed every time a trophy is crafted.", Callback = function() end })
 TabWebhook:createButton({
     Name = "Send Test Webhook",
     Description = "Checks if the webhook URL works.",
@@ -1203,17 +1268,10 @@ TabTourney:createButton({
     end,
 })
 
-TabTourney:createToggle({
-    Name = "Webhook on Tournament Finish",
-    flagName = "WebhookTournament",
-    Flag = false,
-    Description = "Discord embed when a tournament ends.",
-    Callback = function() end,
-})
-
 local labelTourneyState  = TabTourney:createLabel({ Name = "Status: ⚪ idle" })
 local labelTourneyJoins  = TabTourney:createLabel({ Name = "Joined: 0" })
 local labelTourneyWins   = TabTourney:createLabel({ Name = "Top-3 finishes: 0" })
+local labelTourneyNext   = TabTourney:createLabel({ Name = "Next: --" })
 
 
 -- =============================================
@@ -1235,7 +1293,7 @@ TabPotion:createDropdown({
     flagName = "PotionType",
     Flag = { potionList[1] },
     List = potionList,
-    multi = false,
+    multi = true,
     Callback = function() end,
 })
 
@@ -1463,6 +1521,14 @@ interval("AutoCraftTrophy", "AutoCraftTrophy", 15, function()
         local name = trophyLabelToName[label] or label
         if fireRemote(remotes.CraftTrophy, name) then
             stats.trophiesCrafted += 1
+            if Library.Flags["WebhookTrophy"] then
+                dispatchWebhook({ embeds = {{
+                    title = "🏆 Trophy Crafted",
+                    description = "Crafted **" .. tostring(name) .. "**",
+                    color = 16766720,
+                    footer = { text = "Spin a Soccer Card" },
+                }}})
+            end
         end
         task.wait(0.15)
     end
@@ -1517,20 +1583,92 @@ interval("AutoApplyTrophy", "AutoApplyTrophy", 20, function()
 end, { persistent = true })
 
 -- =============================================
--- AUTO TOURNAMENT (join + equip best)
+-- TOURNAMENT TRACKER + SMART JOIN
+-- Tracks the active tournament window via TournamentClock helper
+-- (or its derivatives). Only fires "join" while a tournament is OPEN
+-- and the player isn't already in it.
 -- =============================================
-interval("AutoJoinTournament", "AutoJoinTournament", 15, function()
+local function getTournamentStatus()
+    -- Returns a table: { isOpen=bool, secondsUntilOpen=number?, secondsUntilClose=number? }
+    -- Best-effort: tries several common APIs on TournamentClock + falls back to attribute scans.
+    local out = { isOpen = false, secondsUntilOpen = nil, secondsUntilClose = nil }
+
+    if type(TournamentClock) == "table" then
+        for _, fn in ipairs({ "GetState", "getState", "GetCurrent", "GetWindow", "getStatus" }) do
+            if type(TournamentClock[fn]) == "function" then
+                local ok, info = pcall(TournamentClock[fn])
+                if ok and type(info) == "table" then
+                    if info.isOpen ~= nil then out.isOpen = info.isOpen
+                    elseif info.active ~= nil then out.isOpen = info.active
+                    elseif info.running ~= nil then out.isOpen = info.running end
+                    out.secondsUntilOpen  = info.secondsUntilOpen  or info.untilStart or info.startsIn
+                    out.secondsUntilClose = info.secondsUntilClose or info.untilEnd   or info.endsIn
+                    return out
+                end
+            end
+        end
+        -- Some games expose: GetSecondsUntilStart() / IsActive()
+        if type(TournamentClock.IsActive) == "function" then
+            local ok, v = pcall(TournamentClock.IsActive)
+            if ok then out.isOpen = v == true end
+        end
+        if type(TournamentClock.GetSecondsUntilStart) == "function" then
+            local ok, v = pcall(TournamentClock.GetSecondsUntilStart)
+            if ok then out.secondsUntilOpen = tonumber(v) end
+        end
+        if type(TournamentClock.GetSecondsUntilEnd) == "function" then
+            local ok, v = pcall(TournamentClock.GetSecondsUntilEnd)
+            if ok then out.secondsUntilClose = tonumber(v) end
+        end
+    end
+
+    -- Fallback: scan workspace for a "TournamentSessionActive" / "TournamentPrompt" attribute or sign
+    if not out.isOpen then
+        pcall(function()
+            local sign = Workspace:FindFirstChild("TournamentSign", true)
+                       or Workspace:FindFirstChild("TournamentPrompt", true)
+            if sign then
+                local active = sign:GetAttribute("Active") or sign:GetAttribute("IsOpen")
+                if active ~= nil then out.isOpen = active == true end
+                local sUntil = sign:GetAttribute("StartsIn") or sign:GetAttribute("SecondsUntilOpen")
+                if sUntil then out.secondsUntilOpen = tonumber(sUntil) end
+            end
+        end)
+    end
+
+    return out
+end
+
+interval("AutoJoinTournament", "AutoJoinTournament", 5, function()
     if not remotes.Tournament then return end
     if tournamentState.inTournament then return end
+
+    local status = getTournamentStatus()
+    tournamentState.lastStatus = status
+
+    -- Only join when tournament is actually OPEN
+    if not status.isOpen then return end
+
     if fireRemote(remotes.Tournament, "join") then
         tournamentState.joins += 1
         stats.tournamentJoins += 1
         tournamentState.inTournament = true
+        notify("Tournament", "Auto-joined tournament", "info")
+        if Library.Flags["WebhookTournamentJoin"] then
+            dispatchWebhook({ embeds = {{
+                title = "🥇 Tournament Joined",
+                description = "Auto-joined an open tournament.",
+                color = 5763719,
+                footer = { text = "Spin a Soccer Card" },
+            }}})
+        end
     end
 end, { persistent = true })
 
 interval("AutoEquipBestTourney", "AutoEquipBestTourney", 30, function()
     if not remotes.Tournament then return end
+    -- Only equip best while in a tournament (avoids wasted fires)
+    if not tournamentState.inTournament then return end
     fireRemote(remotes.Tournament, "equip_best")
 end, { persistent = true })
 
@@ -1602,28 +1740,106 @@ end, function()
 
     if getRebirthLevel() > before then
         stats.rebirths += 1
+        if Library.Flags["WebhookRebirth"] then
+            dispatchWebhook({ embeds = {{
+                title = "🌟 Rebirth!",
+                description = "Reached **Rebirth Level " .. getRebirthLevel() .. "**",
+                color = 15844367,
+                footer = { text = "Spin a Soccer Card • " .. client.Name },
+            }}})
+        end
     end
 end, { persistent = true })
+
+-- Returns a list of currently equipped cards as { {name, rarity, mutations}, ... }
+local function getEquippedCardsList()
+    local cards = CardConfig and CardConfig.Cards or {}
+    local out = {}
+    for slotIndex, sd in pairs(getSlots()) do
+        if type(sd) == "table" and type(sd.card) == "table" and sd.card.id then
+            local cfg = cards[sd.card.id]
+            local muts = getCardMutations(sd.card)
+            table.insert(out, {
+                slot = tonumber(slotIndex) or slotIndex,
+                id = sd.card.id,
+                name = (cfg and cfg.DisplayName) or sd.card.id,
+                rarity = (cfg and cfg.Rarity) or "?",
+                income = (cfg and tonumber(cfg.IncomeRate)) or 0,
+                mutationCount = #muts,
+                mutations = muts,
+            })
+        end
+    end
+    table.sort(out, function(a, b)
+        if type(a.slot) == "number" and type(b.slot) == "number" then return a.slot < b.slot end
+        return tostring(a.slot) < tostring(b.slot)
+    end)
+    return out
+end
+
+local function formatEquippedForWebhook()
+    local list = getEquippedCardsList()
+    if #list == 0 then return "_(no cards equipped)_" end
+    local lines = {}
+    for _, c in ipairs(list) do
+        local mutText = ""
+        if c.mutationCount > 0 then
+            mutText = " 🧬x" .. c.mutationCount
+        end
+        table.insert(lines, string.format("`#%s` ⚽ **%s** • _%s_ • 💵 $%s/s%s",
+            tostring(c.slot), c.name, c.rarity, formatCash(c.income), mutText))
+    end
+    return table.concat(lines, "\n")
+end
 
 interval("WebhookStats", "WebhookStats", function()
     return math.max((tonumber(Library.Flags["WebhookStatsDelay"]) or STATS_DELAY_DEFAULT) * 60, 60)
 end, function()
+    local uptime = os.time() - (stats.sessionStart or os.time())
+    local equippedText = Library.Flags["WebhookIncludeEquipped"] ~= false
+        and formatEquippedForWebhook()
+        or "_(disabled in Webhooks tab)_"
+
+    local description = table.concat({
+        "💰 **Cash:** $" .. formatCash(getCash()),
+        "💎 **Gems:** " .. formatCash(getGems()),
+        "🌟 **Rebirth Level:** " .. getRebirthLevel(),
+        "⏱️ **Uptime:** " .. string.format("%02d:%02d:%02d",
+            math.floor(uptime / 3600),
+            math.floor((uptime % 3600) / 60),
+            uptime % 60),
+    }, "\n")
+
     dispatchWebhook({
         embeds = {{
-                title = "[+] Spin a Soccer Card Analytics",
-                description = "[$] **Cash:** $" .. formatCash(getCash()) .. "\n"
-                .. "[*] **Gems:** " .. formatCash(getGems()) .. "\n"
-                .. "[#] **Rebirth Level:** " .. getRebirthLevel() .. "\n"
-                .. "[>] **Packs Opened:** " .. formatCash(stats.opened) .. "\n"
-                .. "[!] **Session Rebirths:** " .. stats.rebirths,
-                color = 3447003,
-                footer = { text = "Spin a Soccer Card - User: " .. client.Name },
-            }}
+            title = "📊 Spin a Soccer Card • Session Stats",
+            description = description,
+            color = 3447003,
+            fields = {
+                { name = "📦 Packs Opened", value = formatCash(stats.opened), inline = true },
+                { name = "🛒 Packs Bought", value = formatCash(stats.bought), inline = true },
+                { name = "💸 Cards Sold",   value = formatCash(stats.sold),   inline = true },
+                { name = "🔄 Rebirths",     value = tostring(stats.rebirths), inline = true },
+                { name = "💎 Gem Buys",     value = tostring(stats.gemBuys),  inline = true },
+                { name = "✨ Wishes",       value = tostring(stats.wishes or 0), inline = true },
+                { name = "🏆 Trophies",     value = tostring(stats.trophiesCrafted or 0), inline = true },
+                { name = "🧪 Potions",      value = tostring(stats.potionsUsed or 0), inline = true },
+                { name = "🥇 Tournaments",  value = tostring(stats.tournamentJoins or 0), inline = true },
+                { name = "⚽ Equipped Cards", value = equippedText, inline = false },
+            },
+            footer = { text = "Spin a Soccer Card • " .. client.Name .. " • " .. os.date("%H:%M:%S") },
+        }}
     })
 end, { persistent = true })
 
 interval("SSC_SuppressFlagSync", nil, 1, function()
     syncUiSuppressFlags()
+end)
+
+-- Tight safety-net loop that nukes any AutoSkip/AutoOpen button that snuck past
+-- the DescendantAdded hook. Also enforces silent pack opening.
+interval("SSC_RollUINuker", nil, 0.1, function()
+    destroyRollUIs()
 end)
 
 interval("SSC_GuiSuppressor", function()
@@ -1692,11 +1908,23 @@ interval("SSC_StatsUIUpdate", nil, 2, function()
         if labelPotions and labelPotions.Set then labelPotions:Set("🧪 Potions Used: " .. (stats.potionsUsed or 0)) end
         if labelUptime and labelUptime.Set then labelUptime:Set("⏱️ Uptime: " .. formatDuration(uptime)) end
 
+        local tStatus = getTournamentStatus()
+        local statusEmoji = tournamentState.inTournament and "🟢 in tournament"
+            or (tStatus.isOpen and "🟡 open — joinable" or "⚪ idle")
         if labelTourneyState and labelTourneyState.Set then
-            labelTourneyState:Set("Status: " .. (tournamentState.inTournament and "🟢 in tournament" or "⚪ idle"))
+            labelTourneyState:Set("Status: " .. statusEmoji)
         end
         if labelTourneyJoins and labelTourneyJoins.Set then labelTourneyJoins:Set("Joined: " .. tournamentState.joins) end
         if labelTourneyWins  and labelTourneyWins.Set  then labelTourneyWins:Set("Top-3 finishes: " .. tournamentState.wins) end
+        if labelTourneyNext  and labelTourneyNext.Set  then
+            local nextText = "--"
+            if tStatus.isOpen and tStatus.secondsUntilClose then
+                nextText = "ends in " .. formatDuration(tStatus.secondsUntilClose)
+            elseif tStatus.secondsUntilOpen then
+                nextText = "starts in " .. formatDuration(tStatus.secondsUntilOpen)
+            end
+            labelTourneyNext:Set("Next: " .. nextText)
+        end
     end)
 end)
 
