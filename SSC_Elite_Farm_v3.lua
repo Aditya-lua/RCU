@@ -268,6 +268,36 @@ if #potionList == 0 then
     potionList = { "Snowstorm Potion", "Thunderstorm Potion", "Toxic Rain Potion", "Blood Moon Potion", "Solar Eclipse Potion" }
 end
 
+-- Build trophy list from config (sorted by rarity)
+local trophyList = {}
+if TrophyConfig then
+    -- TrophyConfig has a Trophies table OR the trophies are top-level keys
+    local trophies = TrophyConfig.Trophies or TrophyConfig
+    for name, data in pairs(trophies) do
+        if type(data) == "table" and (data.DisplayName or data.Rarity or data.Requirements) then
+            local rarity = data.Rarity or "?"
+            local lvl = rarityOrder[rarity] or 0
+            table.insert(trophyList, { name = name, rarity = rarity, lvl = lvl })
+        end
+    end
+    table.sort(trophyList, function(a, b)
+        if a.lvl ~= b.lvl then return a.lvl > b.lvl end
+        return a.name < b.name
+    end)
+end
+local trophyNameList = {}
+for _, t in ipairs(trophyList) do
+    table.insert(trophyNameList, t.name .. " [" .. t.rarity .. "]")
+end
+if #trophyNameList == 0 then
+    trophyNameList = { "Golden Boot [Legendary]", "Champions League [Mythic]", "Ballon d'Or [Divine]" }
+end
+-- map display label -> raw trophy name (for FireServer)
+local trophyLabelToName = {}
+for i, t in ipairs(trophyList) do
+    trophyLabelToName[trophyNameList[i]] = t.name
+end
+
 
 -- [ SESSION STATS ]
 local stats = {
@@ -517,6 +547,7 @@ end
 local huntFound = false
 if remotes.OpenPack then
     remotes.OpenPack.OnClientEvent:Connect(function(img, cData, color, uuid, chances, isNew, pName)
+      pcall(function()
         if img == "x" or type(cData) ~= "table" then return end
 
         local r = cData.Rarity or "Common"
@@ -595,6 +626,7 @@ if remotes.OpenPack then
                 stats.locked = stats.locked + 1
             end
         end
+      end) -- end inner pcall
     end)
 end
 
@@ -796,7 +828,8 @@ local timers = {
 
 task.spawn(function()
     while task.wait(0.2) do
-        if Library.Flags["MasterKillSwitch"] then else
+      local mainOK, mainErr = pcall(function()
+        if Library.Flags["MasterKillSwitch"] then return end
         local now = os.clock()
         _G.SSC_DisablePopups = Library.Flags["DisablePopups"]
 
@@ -889,30 +922,46 @@ task.spawn(function()
             pcall(function() remotes.OfflineReward:FireServer("claim_normal") end)
         end
 
-        -- Auto Wish (uses real remote: PerformWish)
-        if Library.Flags["AutoWish"] and (now - timers.wish) >= 12 then
+        -- Auto Wish — PerformWish is a RemoteFunction, must InvokeServer!
+        if Library.Flags["AutoWish"] and (now - timers.wish) >= 5 then
             timers.wish = now
             pcall(function()
                 if remotes.PerformWish then
-                    remotes.PerformWish:FireServer()
-                    stats.wishes = stats.wishes + 1
+                    -- Resolve fresh in case lazy-load gave us a stale ref
+                    local pw = remotes.PerformWish
+                    local ok, cls = pcall(function() return pw.ClassName end)
+                    if ok then
+                        if cls == "RemoteFunction" then
+                            pw:InvokeServer()
+                        else
+                            pw:FireServer()
+                        end
+                        stats.wishes = stats.wishes + 1
+                    end
                 end
             end)
         end
 
-        -- Auto Craft Trophy (uses real remote: CraftTrophy)
-        if Library.Flags["AutoCraftTrophy"] and (now - timers.trophy) >= 20 then
+        -- Auto Craft Trophy — needs trophy NAME argument
+        if Library.Flags["AutoCraftTrophy"] and (now - timers.trophy) >= 15 then
             timers.trophy = now
             pcall(function()
-                if remotes.CraftTrophy then
-                    remotes.CraftTrophy:FireServer()
+                if not remotes.CraftTrophy then return end
+                -- Resolve every selected trophy from the dropdown
+                local flag = Library.Flags["CraftTrophyList"]
+                local sel  = type(flag) == "table" and flag or {}
+                if #sel == 0 then return end
+                for _, label in ipairs(sel) do
+                    local trophyName = trophyLabelToName[label] or label
+                    pcall(function() remotes.CraftTrophy:FireServer(trophyName) end)
                     stats.trophiesCrafted = stats.trophiesCrafted + 1
+                    hwait(0.1, 0.2)
                 end
             end)
         end
 
-        -- Auto Apply Trophies to best cards (uses real remote: ApplyTrophy)
-        if Library.Flags["AutoApplyTrophies"] and (now - timers.trophy) >= 25 then
+        -- Auto Apply Trophies to best plots — needs (trophyName, plotNumber)
+        if Library.Flags["AutoApplyTrophies"] and (now - timers.trophy) >= 20 then
             pcall(function()
                 if not remotes.ApplyTrophy then return end
                 local data = getPlayerData()
@@ -920,26 +969,49 @@ task.spawn(function()
                 local trophies = data.trophies or {}
                 local slots    = data.slots    or {}
 
-                local trophyList = {}
-                for _, tr in pairs(trophies) do
-                    if type(tr) == "table" and tr.uuid and not tr.equipped then
-                        table.insert(trophyList, { uuid=tr.uuid, val=(tr.value or tr.tier or 0) })
+                -- Build sorted list of available (unequipped) trophies by name.
+                -- We don't know each trophy instance's "name" — but the inventory
+                -- stores them keyed by name, or with .name/.id fields.
+                local available = {}
+                for k, tr in pairs(trophies) do
+                    if type(tr) == "table" then
+                        local trophyName = tr.name or tr.id or (type(k) == "string" and k or nil)
+                        local equipped   = tr.equipped or tr.equippedTo or tr.plot
+                        if trophyName and not equipped then
+                            local cfg = TrophyConfig and (
+                                (TrophyConfig.Trophies and TrophyConfig.Trophies[trophyName])
+                                or TrophyConfig[trophyName]
+                            )
+                            local rarity = (cfg and cfg.Rarity) or "Bronze"
+                            table.insert(available, {
+                                name = trophyName,
+                                lvl  = rarityOrder[rarity] or 0,
+                            })
+                        end
                     end
                 end
-                table.sort(trophyList, function(a, b) return a.val > b.val end)
+                table.sort(available, function(a, b) return a.lvl > b.lvl end)
 
-                local slotList = {}
-                for _, sd in pairs(slots) do
-                    if sd and sd.card and sd.card.uuid then
+                -- Sort plots (slot indices) by income of card on them
+                local plotList = {}
+                for slotIndex, sd in pairs(slots) do
+                    if sd and sd.card then
                         local cfg = CardConfig.Cards[sd.card.id]
-                        table.insert(slotList, { uuid=sd.card.uuid, inc=(cfg and cfg.IncomeRate or 0) })
+                        local inc = (cfg and cfg.IncomeRate) or 0
+                        local plotNum = tonumber(slotIndex) or slotIndex
+                        if type(plotNum) == "number" then
+                            -- skip plots that already have a trophy (if known)
+                            if not (sd.trophy or sd.trophyName) then
+                                table.insert(plotList, { plot = plotNum, inc = inc })
+                            end
+                        end
                     end
                 end
-                table.sort(slotList, function(a, b) return a.inc > b.inc end)
+                table.sort(plotList, function(a, b) return a.inc > b.inc end)
 
-                for i = 1, math.min(#trophyList, #slotList) do
-                    remotes.ApplyTrophy:FireServer(trophyList[i].uuid, slotList[i].uuid)
-                    hwait(0.08, 0.15)
+                for i = 1, math.min(#available, #plotList) do
+                    remotes.ApplyTrophy:FireServer(available[i].name, plotList[i].plot)
+                    hwait(0.1, 0.2)
                 end
             end)
         end
@@ -1089,7 +1161,10 @@ task.spawn(function()
                 end
             end)
         end
-        end -- end MasterKillSwitch
+      end) -- end pcall(mainOK)
+      if not mainOK then
+          warn("[SSC] main loop error: " .. tostring(mainErr))
+      end
     end
 end)
 
@@ -1097,8 +1172,9 @@ end)
 -- [ FAST LOOP: OPEN / BUY PACKS ]
 local openIdx, buyIdx = 1, 1
 task.spawn(function()
-    while task.wait() do
-        if Library.Flags["MasterKillSwitch"] then task.wait(0.3) else
+    while task.wait(0.05) do
+      local fastOK, fastErr = pcall(function()
+        if Library.Flags["MasterKillSwitch"] then task.wait(0.3) return end
 
         -- weather gate
         local wOK = true
@@ -1165,13 +1241,16 @@ task.spawn(function()
             end)
             if delay > 0 then hwait(delay, delay + 0.15) end
         end
-        end -- end MasterKillSwitch
+      end) -- end pcall(fastOK)
+      if not fastOK then
+          warn("[SSC] fast loop error: " .. tostring(fastErr))
+      end
     end
 end)
 
 
 -- =============================================
--- UI SECTIONS — 7 clean tabs with emojis
+-- UI SECTIONS — professional 7-tab layout
 -- =============================================
 
 print("[SSC] Building UI...")
@@ -1201,10 +1280,10 @@ if #pList == 0 then pList = { "Bronze" } end
 -- 🏠 MAIN — high level controls + rebirth + safety
 -- =============================================
 
-TabMain:createLabel({ Name = "Spin a Soccer Card", Special = true })
-TabMain:createLabel({ Name = "Paid Contributor :- aditya44325f" })
+TabMain:createLabel({ Name = "⚽ Spin a Soccer Card", Special = true })
+TabMain:createLabel({ Name = "Contributor: aditya44325f  •  UI: Versus Airlines" })
 
-TabMain:createLabel({ Name = "⚠️ Global", Special = true })
+TabMain:createLabel({ Name = "⚠️ Global Controls", Special = true })
 
 TabMain:createToggle({
     Name        = "🛑 Master Kill Switch",
@@ -1590,53 +1669,97 @@ TabAuto:createDropdown({
 
 
 -- =============================================
--- 🏆 EXTRAS — wishing + trophies + tournament
+-- 🏆 EXTRAS — Wishing | Trophies | Tournament | Potions
 -- =============================================
 
+------------------------------------------------------------
+-- ✨  WISHING
+------------------------------------------------------------
 TabExtra:createLabel({ Name = "✨ Wishing", Special = true })
 
 TabExtra:createToggle({
     Name        = "Auto Perform Wish",
     flagName    = "AutoWish",
     Flag        = false,
-    Description = "Calls PerformWish remote every ~12s.",
+    Description = "Invokes PerformWish (RemoteFunction) every 5 seconds.",
     Callback    = function() end,
 })
 
+TabExtra:createButton({
+    Name = "✨ Perform Wish Now",
+    Callback = function()
+        if not remotes.PerformWish then notify("Wish", "PerformWish remote missing.", "warning") return end
+        pcall(function() remotes.PerformWish:InvokeServer() end)
+        stats.wishes = stats.wishes + 1
+        logEvent("Wish", "Manual wish fired")
+    end,
+})
+
+------------------------------------------------------------
+-- 🏆  TROPHIES
+------------------------------------------------------------
 TabExtra:createLabel({ Name = "🏆 Trophies", Special = true })
 
 TabExtra:createToggle({
-    Name        = "Auto Craft Trophy",
+    Name        = "Auto Craft Selected Trophies",
     flagName    = "AutoCraftTrophy",
     Flag        = false,
-    Description = "Fires CraftTrophy remote every 20s.",
+    Description = "Crafts each trophy in the list below every 15s (skips silently if requirements aren't met).",
     Callback    = function() end,
+})
+
+TabExtra:createDropdown({
+    Name        = "Trophies to Craft",
+    flagName    = "CraftTrophyList",
+    Flag        = { trophyNameList[1] },
+    List        = trophyNameList,
+    multi       = true,
+    Description = "Multi-select. Sorted by rarity (highest first).",
+    Callback    = function() end,
+})
+
+TabExtra:createButton({
+    Name = "🛠️ Craft Selected Now",
+    Callback = function()
+        if not remotes.CraftTrophy then notify("Trophy", "CraftTrophy missing.", "warning") return end
+        local f = Library.Flags["CraftTrophyList"]
+        local sel = type(f) == "table" and f or {}
+        if #sel == 0 then notify("Trophy", "No trophies selected.", "warning") return end
+        for _, label in ipairs(sel) do
+            local name = trophyLabelToName[label] or label
+            pcall(function() remotes.CraftTrophy:FireServer(name) end)
+            stats.trophiesCrafted = stats.trophiesCrafted + 1
+        end
+        notify("Trophy", "Fired " .. #sel .. " craft attempts.", "info")
+    end,
 })
 
 TabExtra:createToggle({
-    Name        = "Auto Apply Trophies to Best Cards",
+    Name        = "Auto Apply Trophies to Best Plots",
     flagName    = "AutoApplyTrophies",
     Flag        = false,
-    Description = "Pairs highest-tier trophies with your highest-income equipped cards.",
+    Description = "ApplyTrophy(name, plotNumber) — highest-tier trophy → highest-income plot.",
     Callback    = function() end,
 })
 
-TabExtra:createLabel({ Name = "🥇 Tournament (Native)", Special = true })
-TabExtra:createLabel({ Name = "Uses real Tournament remote: 'join' and 'equip_best' actions." })
+------------------------------------------------------------
+-- 🥇  TOURNAMENT
+------------------------------------------------------------
+TabExtra:createLabel({ Name = "🥇 Tournament", Special = true })
 
 TabExtra:createToggle({
     Name        = "Auto Join Tournament",
     flagName    = "AutoJoinTournament",
     Flag        = false,
-    Description = "Fires Tournament('join') every 15s when not already in one.",
+    Description = "Tournament('join') every 15s when not already in one.",
     Callback    = function() end,
 })
 
 TabExtra:createToggle({
-    Name        = "Auto Equip Best Tournament Team",
+    Name        = "Auto Equip Best Team",
     flagName    = "AutoEquipBestTourney",
     Flag        = false,
-    Description = "Fires Tournament('equip_best') every 30s — game auto-picks your strongest team.",
+    Description = "Tournament('equip_best') every 30s.",
     Callback    = function() end,
 })
 
@@ -1647,24 +1770,26 @@ TabExtra:createToggle({
     Callback    = function() end,
 })
 
-local lbl_t_state = TabExtra:createLabel({ Name = "Status: idle" })
+local lbl_t_state = TabExtra:createLabel({ Name = "Status: ⚪ idle" })
 local lbl_t_join  = TabExtra:createLabel({ Name = "Joined: 0" })
 local lbl_t_win   = TabExtra:createLabel({ Name = "Top-3 finishes: 0" })
 local lbl_t_place = TabExtra:createLabel({ Name = "Last placement: --" })
 
+------------------------------------------------------------
+-- 🧪  WEATHER POTIONS
+------------------------------------------------------------
 TabExtra:createLabel({ Name = "🧪 Weather Potions", Special = true })
-TabExtra:createLabel({ Name = "Uses UsePotion remote to force a weather event (300s duration)." })
 
 TabExtra:createToggle({
-    Name        = "Auto Use Selected Potion",
+    Name        = "Auto Use Potion",
     flagName    = "AutoUsePotion",
     Flag        = false,
-    Description = "Fires UsePotion every 300s (matches the in-game cooldown).",
+    Description = "Uses selected potion every 300s (matches game cooldown).",
     Callback    = function() end,
 })
 
 TabExtra:createDropdown({
-    Name        = "Potion to Use",
+    Name        = "Potion",
     flagName    = "PotionType",
     Flag        = { potionList[1] },
     List        = potionList,
@@ -1673,13 +1798,14 @@ TabExtra:createDropdown({
 })
 
 TabExtra:createButton({
-    Name        = "🧪 Use Potion Now",
-    Callback    = function()
+    Name = "🧪 Use Potion Now",
+    Callback = function()
         if not remotes.UsePotion then notify("Potion", "UsePotion remote missing.", "warning") return end
         local f = Library.Flags["PotionType"]
         local p = (type(f)=="table" and f[1]) or f or potionList[1]
         pcall(function() remotes.UsePotion:FireServer(p) end)
         logEvent("Potion", "Used " .. tostring(p))
+        notify("Potion", "Used " .. tostring(p), "info")
     end,
 })
 
@@ -1911,8 +2037,24 @@ end)
 
 
 -- [ DONE ]
--- Push initial pack settings to server so the UI state matches the game
 task.delay(2, function() pcall(syncPackSettings) end)
 
-print("[SSC] Loaded. " .. #CORE_REMOTES .. " core remotes, " .. #cardIdList .. " cards in dropdowns.")
+-- Diagnostic: report which key remotes resolved (helps debug "X doesn't work")
+do
+    local report = { "[SSC] Remote resolution report:" }
+    local function chk(name)
+        local r = remotes[name]
+        local cls = "nil"
+        if r then pcall(function() cls = r.ClassName end) end
+        table.insert(report, "  " .. name .. " = " .. tostring(r ~= nil) .. " (" .. cls .. ")")
+    end
+    for _, n in ipairs({
+        "OpenPack","BuyPack","BuyGemShopItem","SellCards","EquipCard","CollectSlot",
+        "Rebirth","PerformWish","CraftTrophy","ApplyTrophy","DestroyTrophy",
+        "Tournament","UsePotion","PackSettings",
+    }) do chk(n) end
+    print(table.concat(report, "\n"))
+end
+
+print("[SSC] Loaded. " .. #cardIdList .. " cards, " .. #trophyNameList .. " trophies, " .. #potionList .. " potions.")
 logEvent("Init", "Spin a Soccer Card loaded.")
