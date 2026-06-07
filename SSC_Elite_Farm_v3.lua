@@ -683,12 +683,26 @@ local function equipBest()
 end
 
 -- =============================================
--- ROLL UI NUKER — kills AutoSkip/AutoOpen buttons + pack reveal GUI
--- the INSTANT they spawn. Runs in three ways:
---   1. Continuous walker (every 0.05s) — fallback safety net
---   2. DescendantAdded listener on PlayerGui — catches anything new instantly
---   3. ChildAdded on each ScreenGui — catches reveal frames as they mount
+-- ROLL UI NUKER — narrowly scoped
+-- Only kills the pack-opening REVEAL MODAL and any AutoSkip/AutoOpen buttons
+-- that live INSIDE that modal. We never touch buttons that exist standalone in
+-- the game HUD (those have the same names but belong to the regular plot UI).
 -- =============================================
+
+-- Exact ScreenGui names known to host the pack reveal modal.
+-- (Pattern matching was too aggressive — e.g. "reveal" matched random HUD frames.)
+local REVEAL_SCREENGUI_NAMES = {
+    PackOpening = true,
+    OpenPack = true,
+    PackOpen = true,
+    PackReveal = true,
+    CardReveal = true,
+    RevealPack = true,
+    PackOpeningUI = true,
+    OpenPackUI = true,
+    CardResult = true,
+    GachaReveal = true,
+}
 
 local BUTTON_NAMES_TO_KILL = {
     AutoSkip = true, AutoOpen = true,
@@ -696,31 +710,22 @@ local BUTTON_NAMES_TO_KILL = {
     ["Auto Skip"] = true, ["Auto Open"] = true,
 }
 
--- Aggressive list: any ScreenGui whose name contains any of these is killed
--- when Silent Open is on. Also handles the BlurEffect that the cutscene adds.
-local REVEAL_GUI_NAME_PATTERNS = {
-    "packopen", "openpack", "packreveal", "cardreveal", "revealpack",
-    "reveal", "packopening", "openinganim", "packanim",
-    "open_pack", "open-pack", "cardpopup", "rollscreen", "rollui",
-    "rolling", "gachareveal", "boxopen", "cardresult",
-}
-
--- Class names of effects we want gone during silent open (cutscene blur)
 local CUTSCENE_EFFECT_CLASSES = {
     BlurEffect = true, ColorCorrectionEffect = true,
     DepthOfFieldEffect = true, BloomEffect = true,
 }
 
-local function nameLooksLikeRevealGui(name)
-    if type(name) ~= "string" then return false end
-    local lower = string.lower(name)
-    for _, p in ipairs(REVEAL_GUI_NAME_PATTERNS) do
-        if string.find(lower, p, 1, true) then return true end
+-- Is `inst` inside a known reveal-modal ScreenGui?
+local function isInsideRevealModal(inst)
+    local cur = inst
+    while cur and cur ~= game do
+        if REVEAL_SCREENGUI_NAMES[cur.Name] then return true end
+        cur = cur.Parent
     end
     return false
 end
 
--- Kill cutscene post-process effects (the blur lingering after silent open)
+-- Kill cutscene post-process effects (the blur the game adds during reveals)
 local function nukeCutsceneEffects()
     pcall(function()
         local lighting = game:GetService("Lighting")
@@ -729,7 +734,6 @@ local function nukeCutsceneEffects()
                 fx.Enabled = false
             end
         end
-        -- Also check workspace.CurrentCamera (some games attach blur there)
         local cam = Workspace.CurrentCamera
         if cam then
             for _, fx in ipairs(cam:GetChildren()) do
@@ -743,68 +747,52 @@ end
 
 local function tryKillBadDescendant(desc)
     if not desc or not desc.Parent then return end
-    -- 1. Buttons we want gone
-    if BUTTON_NAMES_TO_KILL[desc.Name] then
-        pcall(function() desc:Destroy() end)
-        return
-    end
-    -- 2. Reveal screen GUIs (silent open) — destroy entirely
-    if Library.Flags["SilentOpenPacks"] and desc:IsA("ScreenGui") and nameLooksLikeRevealGui(desc.Name) then
+    if not Library.Flags["SilentOpenPacks"] then return end
+
+    -- 1. Whole reveal-modal ScreenGui → destroy
+    if desc:IsA("ScreenGui") and REVEAL_SCREENGUI_NAMES[desc.Name] then
         pcall(function() desc.Enabled = false end)
         pcall(function() desc:Destroy() end)
         return
     end
-    -- 3. Frames whose name matches reveal patterns (some games nest the reveal in MainGui)
-    if Library.Flags["SilentOpenPacks"] and (desc:IsA("Frame") or desc:IsA("ImageLabel"))
-       and nameLooksLikeRevealGui(desc.Name) then
-        pcall(function() desc.Visible = false end)
+
+    -- 2. AutoSkip/AutoOpen buttons — ONLY if inside a reveal modal.
+    -- We never touch standalone game-HUD buttons with these names.
+    if BUTTON_NAMES_TO_KILL[desc.Name] and isInsideRevealModal(desc) then
+        pcall(function() desc:Destroy() end)
         return
     end
 end
 
--- LIGHT version: only walks TOP-LEVEL ScreenGui children + their ButtonsContainer.
--- This is the safety-net loop — the heavy lifting is done by DescendantAdded.
--- Walking the full PlayerGui (often 3000+ descendants) was the #1 source of lag.
+-- Light safety-net walker: just checks top-level ScreenGuis by name.
+-- No more "walk every descendant" — that was the lag source AND the bug source.
 local function destroyRollUIs()
+    if not Library.Flags["SilentOpenPacks"] then return end
     pcall(function()
         local playerGui = client:FindFirstChild("PlayerGui")
         if not playerGui then return end
         for _, screenGui in ipairs(playerGui:GetChildren()) do
-            -- Check the top-level GUI itself
-            tryKillBadDescendant(screenGui)
-            -- Only walk one level deep, looking for common "ButtonsContainer" patterns
-            if screenGui:IsA("ScreenGui") then
-                local frame = screenGui:FindFirstChild("Frame")
-                if frame then
-                    local buttons = frame:FindFirstChild("ButtonsContainer")
-                    if buttons then
-                        for _, btn in ipairs(buttons:GetChildren()) do
-                            if BUTTON_NAMES_TO_KILL[btn.Name] then
-                                pcall(function() btn:Destroy() end)
-                            end
-                        end
-                    end
-                end
+            if screenGui:IsA("ScreenGui") and REVEAL_SCREENGUI_NAMES[screenGui.Name] then
+                pcall(function() screenGui:Destroy() end)
             end
         end
     end)
-    if Library.Flags["SilentOpenPacks"] then
-        nukeCutsceneEffects()
-    end
+    nukeCutsceneEffects()
 end
 
--- Hook DescendantAdded once for instant kills
+-- DescendantAdded does the real-time work; this just bootstraps it.
 local _rollUIHooked = false
 local function installRollUIHook()
     if _rollUIHooked then return end
     _rollUIHooked = true
     local playerGui = client:WaitForChild("PlayerGui", 10)
     if not playerGui then return end
+
     playerGui.DescendantAdded:Connect(function(d)
-        -- Defer one frame so name/parent are stable
         task.defer(tryKillBadDescendant, d)
     end)
-    -- Also hook Lighting + Camera for blur effects added at runtime
+
+    -- Lighting / Camera hooks for blur effects spawned mid-cutscene
     pcall(function()
         local lighting = game:GetService("Lighting")
         lighting.ChildAdded:Connect(function(fx)
@@ -813,7 +801,7 @@ local function installRollUIHook()
             end
         end)
     end)
-    -- Also hammer everything that exists right now
+
     destroyRollUIs()
 end
 installRollUIHook()
@@ -1016,7 +1004,7 @@ local TabTourney = Setup:CreateSection("🥇 Tournament")
 local TabPotion  = Setup:CreateSection("🧪 Potions")
 local TabWebhook = Setup:CreateSection("📡 Webhooks")
 local TabMisc    = Setup:CreateSection("🔧 Misc & Settings")
-local TabStats   = Setup:CreateSection("📊 Analytics")
+-- (Analytics tab removed — all live stats are in Discord webhook embeds instead)
 
 TabFarm:createLabel({ Name = "Paid Contributor: aditya44325f", Special = true })
 
@@ -1399,15 +1387,6 @@ TabExtras:createButton({
     end,
 })
 
-TabExtras:createToggle({
-    Name = "Auto Apply Trophies to Best Plots",
-    flagName = "AutoApplyTrophy",
-    Flag = false,
-    Description = "Pairs highest-tier trophy with highest-EPS plot. ApplyTrophy(name, plot).",
-    Callback = function() end,
-})
-
-
 -- =============================================
 -- 🥇 TOURNAMENT
 -- =============================================
@@ -1495,24 +1474,12 @@ TabPotion:createButton({
 -- =============================================
 -- 📊 STATS
 -- =============================================
-TabStats:createLabel({ Name = "Live Session Analytics", Special = true })
-local labelCash = TabStats:createLabel({ Name = "💰 Cash: $0" })
-local labelGems = TabStats:createLabel({ Name = "💎 Gems: 0" })
-local labelRebirth = TabStats:createLabel({ Name = "🌟 Rebirth Level: 0" })
-local labelOpened = TabStats:createLabel({ Name = "📦 Packs Opened: 0" })
-local labelBought = TabStats:createLabel({ Name = "🛒 Packs Bought: 0" })
-local labelSold = TabStats:createLabel({ Name = "💸 Cards Sold: 0" })
-local labelCollects = TabStats:createLabel({ Name = "💵 Collects: 0" })
-local labelGemBuys = TabStats:createLabel({ Name = "💎 Gem Buys: 0" })
-local labelSessionRebirths = TabStats:createLabel({ Name = "🔄 Session Rebirths: 0" })
-local labelWishes = TabStats:createLabel({ Name = "✨ Wishes: 0" })
-local labelTrophies = TabStats:createLabel({ Name = "🏆 Trophies Crafted: 0" })
-local labelPotions = TabStats:createLabel({ Name = "🧪 Potions Used: 0" })
-local labelUptime = TabStats:createLabel({ Name = "⏱️ Uptime: 00:00:00" })
+-- (Analytics tab + labels removed; stats only surface in Discord webhooks now.)
+-- A small "Reset Stats" button stays in Misc & Settings tab below.
 
-TabStats:createButton({
-    Name = "🔄 Reset Stats",
-    Description = "Resets session counters.",
+TabMisc:createButton({
+    Name = "🔄 Reset Session Stats",
+    Description = "Resets all session counters (cards sold, packs opened, etc.).",
     Callback = function()
         stats = {
             opened = 0, bought = 0, sold = 0, rebirths = 0,
@@ -1773,97 +1740,6 @@ interval("AutoCraftTrophy", "AutoCraftTrophy", 15, function()
 end, { persistent = true })
 
 -- =============================================
--- AUTO APPLY TROPHY — smart version
--- 1. Build a sorted list of plots by card EPS (best first)
--- 2. Build a sorted list of UNEQUIPPED trophies in inventory (best first)
--- 3. For each plot (best → worst):
---    a. If plot has no trophy → apply best unequipped trophy that's better than nothing
---    b. If plot already has a trophy → compare its tier to the best inventory trophy.
---       If inventory has something better → DestroyTrophy(plot) then ApplyTrophy(better, plot)
---       Otherwise skip this plot and move on to the next.
-local function trophyTier(trophyName)
-    local source = (TrophyConfig and TrophyConfig.Trophies) or TrophyConfig or {}
-    local cfg = source[trophyName]
-    if type(cfg) ~= "table" then return 0 end
-    return rarityOrder[cfg.Rarity] or 0
-end
-
-interval("AutoApplyTrophy", "AutoApplyTrophy", 20, function()
-    if not remotes.ApplyTrophy then return end
-    local data = getPlayerData()
-    if not data then return end
-    local trophies = data.trophies or {}
-    local slots = data.slots or {}
-
-    -- 1. Plots sorted by card EPS desc (we want BEST card to get BEST trophy)
-    local plotList = {}
-    for slotIndex, sd in pairs(slots) do
-        if type(sd) == "table" and sd.card then
-            local plot = tonumber(slotIndex) or slotIndex
-            if type(plot) == "number" then
-                local existingTrophy = sd.trophy or sd.trophyName or sd.appliedTrophy
-                local existingName = nil
-                if type(existingTrophy) == "table" then
-                    existingName = existingTrophy.name or existingTrophy.id
-                elseif type(existingTrophy) == "string" then
-                    existingName = existingTrophy
-                end
-                table.insert(plotList, {
-                    plot = plot,
-                    inc = getCardScore(sd.card),
-                    existingTrophy = existingName,
-                    existingTier = existingName and trophyTier(existingName) or -1,
-                })
-            end
-        end
-    end
-    table.sort(plotList, function(a, b) return a.inc > b.inc end)
-    if #plotList == 0 then return end
-
-    -- 2. Build available trophy list ONCE (sorted by tier desc).
-    -- We use a "consumed" tracker by index instead of re-querying after each action.
-    local available = {}
-    for k, tr in pairs(trophies) do
-        if type(tr) == "table" then
-            local trName = tr.name or tr.id or (type(k) == "string" and k or nil)
-            local equipped = tr.equipped or tr.equippedTo or tr.plot
-            if trName and not equipped then
-                table.insert(available, { name = trName, tier = trophyTier(trName), used = false })
-            end
-        end
-    end
-    table.sort(available, function(a, b) return a.tier > b.tier end)
-    if #available == 0 then return end
-
-    -- 3. Walk plots; for each, take next-best unused trophy if it's an UPGRADE
-    local cap = 6  -- max upgrades per tick to keep CPU light
-    local done = 0
-    for _, plotEntry in ipairs(plotList) do
-        if done >= cap then break end
-
-        -- find best unused trophy
-        local bestIdx, best = nil, nil
-        for i, t in ipairs(available) do
-            if not t.used then bestIdx, best = i, t break end
-        end
-        if not best then break end
-
-        if best.tier > plotEntry.existingTier then
-            if plotEntry.existingTrophy and remotes.DestroyTrophy then
-                fireRemote(remotes.DestroyTrophy, plotEntry.plot)
-                task.wait(0.2)
-            end
-            if fireRemote(remotes.ApplyTrophy, best.name, plotEntry.plot) then
-                stats.trophiesApplied += 1
-                available[bestIdx].used = true
-                done += 1
-                task.wait(0.2)
-            end
-        end
-    end
-end, { persistent = true })
-
--- =============================================
 -- TOURNAMENT TRACKER + SMART JOIN
 -- Tracks the active tournament window via TournamentClock helper
 -- (or its derivatives). Only fires "join" while a tournament is OPEN
@@ -2032,7 +1908,36 @@ end, function()
     end
 end, { persistent = true })
 
--- Returns a list of currently equipped cards as { {name, rarity, mutations}, ... }
+-- Computes the actual displayed income of an equipped card.
+-- Priority order:
+--   1. slot.income (server-computed live income — includes mutations + boosts)
+--   2. slot.card.income  (same, alternate location)
+--   3. card.IncomeRate   (per-card override stamped at roll-time)
+--   4. CardConfig.Cards[id].IncomeRate (base, last resort)
+-- This is why Wirtz showed $0/s before — Exclusive cards are missing from CardConfig
+-- so the lookup returned nil → 0. We now read the live computed value first.
+local function getLiveCardIncome(slotData)
+    if type(slotData) ~= "table" then return 0 end
+
+    local fromSlot = tonumber(slotData.income) or tonumber(slotData.IncomeRate)
+        or tonumber(slotData.totalIncome) or tonumber(slotData.eps)
+    if fromSlot and fromSlot > 0 then return fromSlot end
+
+    local card = slotData.card
+    if type(card) == "table" then
+        local fromCard = tonumber(card.income) or tonumber(card.IncomeRate)
+            or tonumber(card.totalIncome) or tonumber(card.eps)
+        if fromCard and fromCard > 0 then return fromCard end
+
+        local cfg = CardConfig and CardConfig.Cards and CardConfig.Cards[card.id]
+        if type(cfg) == "table" then
+            return tonumber(cfg.IncomeRate) or 0
+        end
+    end
+    return 0
+end
+
+-- Returns a list of currently equipped cards
 local function getEquippedCardsList()
     local cards = CardConfig and CardConfig.Cards or {}
     local out = {}
@@ -2040,12 +1945,17 @@ local function getEquippedCardsList()
         if type(sd) == "table" and type(sd.card) == "table" and sd.card.id then
             local cfg = cards[sd.card.id]
             local muts = getCardMutations(sd.card)
+            -- Try card-level rarity overrides for exclusives
+            local rarity = (sd.card.rarity or sd.card.Rarity)
+                or (cfg and cfg.Rarity) or "?"
+            local name = (sd.card.name or sd.card.displayName or sd.card.DisplayName)
+                or (cfg and cfg.DisplayName) or sd.card.id
             table.insert(out, {
                 slot = tonumber(slotIndex) or slotIndex,
                 id = sd.card.id,
-                name = (cfg and cfg.DisplayName) or sd.card.id,
-                rarity = (cfg and cfg.Rarity) or "?",
-                income = (cfg and tonumber(cfg.IncomeRate)) or 0,
+                name = name,
+                rarity = rarity,
+                income = getLiveCardIncome(sd),
                 mutationCount = #muts,
                 mutations = muts,
             })
@@ -2064,15 +1974,16 @@ local function formatEquippedForWebhook()
     local lines = {}
     for _, c in ipairs(list) do
         local mutText = ""
-        if c.mutationCount > 0 then
-            mutText = " 🧬x" .. c.mutationCount
-        end
+        if c.mutationCount > 0 then mutText = " 🧬x" .. c.mutationCount end
         table.insert(lines, string.format("`#%s` ⚽ **%s** • _%s_ • 💵 $%s/s%s",
             tostring(c.slot), c.name, c.rarity, formatCash(c.income), mutText))
     end
     return table.concat(lines, "\n")
 end
 
+-- Slim stats webhook — only the top summary block + equipped cards list.
+-- (Removed Cards Sold / Rebirths / Gem Buys / Wishes / Trophies / Potions / Tournaments
+-- as requested.)
 interval("WebhookStats", "WebhookStats", function()
     return math.max((tonumber(Library.Flags["WebhookStatsDelay"]) or STATS_DELAY_DEFAULT) * 60, 60)
 end, function()
@@ -2085,6 +1996,8 @@ end, function()
         "💰 **Cash:** $" .. formatCash(getCash()),
         "💎 **Gems:** " .. formatCash(getGems()),
         "🌟 **Rebirth Level:** " .. getRebirthLevel(),
+        "📦 **Packs Opened:** " .. formatCash(stats.opened),
+        "🛒 **Packs Bought:** " .. formatCash(stats.bought),
         "⏱️ **Uptime:** " .. string.format("%02d:%02d:%02d",
             math.floor(uptime / 3600),
             math.floor((uptime % 3600) / 60),
@@ -2097,15 +2010,6 @@ end, function()
             description = description,
             color = 3447003,
             fields = {
-                { name = "📦 Packs Opened", value = formatCash(stats.opened), inline = true },
-                { name = "🛒 Packs Bought", value = formatCash(stats.bought), inline = true },
-                { name = "💸 Cards Sold",   value = formatCash(stats.sold),   inline = true },
-                { name = "🔄 Rebirths",     value = tostring(stats.rebirths), inline = true },
-                { name = "💎 Gem Buys",     value = tostring(stats.gemBuys),  inline = true },
-                { name = "✨ Wishes",       value = tostring(stats.wishes or 0), inline = true },
-                { name = "🏆 Trophies",     value = tostring(stats.trophiesCrafted or 0), inline = true },
-                { name = "🧪 Potions",      value = tostring(stats.potionsUsed or 0), inline = true },
-                { name = "🥇 Tournaments",  value = tostring(stats.tournamentJoins or 0), inline = true },
                 { name = "⚽ Equipped Cards", value = equippedText, inline = false },
             },
             footer = { text = "Spin a Soccer Card • " .. client.Name .. " • " .. os.date("%H:%M:%S") },
@@ -2124,41 +2028,75 @@ interval("SSC_RollUINuker", nil, 2, function()
     destroyRollUIs()
 end)
 
-interval("SSC_GuiSuppressor", function()
-    return Library.Flags["DisablePopups"] == true or Library.Flags["DisableNotifs"] == true
-end, 1, function()
+-- Suppressor: runs once per second; bails internally if both flags are off.
+-- (Previous version passed a function as the flag arg, which our interval helper
+-- treats as the flag's name — the loop never actually ran.)
+interval("SSC_GuiSuppressor", nil, 1, function()
+    local wantPopups = Library.Flags["DisablePopups"] == true
+    local wantNotifs = Library.Flags["DisableNotifs"] == true
+    if not wantPopups and not wantNotifs then return end
+
     local playerGui = client:FindFirstChild("PlayerGui")
     if not playerGui then return end
 
-    if Library.Flags["DisablePopups"] then
-        for _, promptName in ipairs({ "RebirthPrompt", "OfflineRewardPrompt", "BoothPurchasePrompt" }) do
+    if wantPopups then
+        for _, promptName in ipairs({
+            "RebirthPrompt", "OfflineRewardPrompt", "BoothPurchasePrompt",
+            "PurchasePrompt", "ConfirmPurchase", "GamepassPrompt", "ProductPrompt",
+        }) do
             local promptGui = playerGui:FindFirstChild(promptName)
-            if promptGui and promptGui:IsA("ScreenGui") then
+            if promptGui and promptGui:IsA("ScreenGui") and promptGui.Enabled then
                 promptGui.Enabled = false
             end
         end
     end
 
-    if Library.Flags["DisableNotifs"] then
+    if wantNotifs then
         local notifGui = playerGui:FindFirstChild("Notification")
         if notifGui and notifGui:IsA("ScreenGui") then
-            notifGui.Enabled = false
+            -- Disable the whole ScreenGui (visible toggle)
+            if notifGui.Enabled then notifGui.Enabled = false end
+            -- AND empty out the active notification stack so it doesn't accumulate
             local mainFrame = notifGui:FindFirstChild("Main")
             if mainFrame then
-                for childIndex, child in ipairs(mainFrame:GetChildren()) do
-                    if childIndex % 20 == 0 then
-                        task.wait()
-                    end
-
-                    local isPlaceholder = child.Name == "Placeholder" or child.Name == "PlaceholderAnnouncement"
-                    if child:IsA("Frame") and not isPlaceholder then
+                for _, child in ipairs(mainFrame:GetChildren()) do
+                    local isPlaceholder = child.Name == "Placeholder"
+                        or child.Name == "PlaceholderAnnouncement"
+                    if child:IsA("Frame") and not isPlaceholder and child.Visible then
                         child.Visible = false
                     end
                 end
             end
         end
     end
-end, { persistent = true })
+end)
+
+-- Also kill notifications + popups the INSTANT they spawn via DescendantAdded.
+-- This catches the ones the 1-second poller would otherwise miss.
+do
+    local playerGui = client:WaitForChild("PlayerGui", 5)
+    if playerGui then
+        playerGui.ChildAdded:Connect(function(child)
+            task.defer(function()
+                pcall(function()
+                    if not child or not child.Parent then return end
+                    local nm = child.Name
+                    if Library.Flags["DisableNotifs"] and nm == "Notification" and child:IsA("ScreenGui") then
+                        child.Enabled = false
+                    end
+                    if Library.Flags["DisablePopups"]
+                       and (nm == "RebirthPrompt" or nm == "OfflineRewardPrompt"
+                            or nm == "BoothPurchasePrompt" or nm == "PurchasePrompt"
+                            or nm == "ConfirmPurchase" or nm == "GamepassPrompt"
+                            or nm == "ProductPrompt")
+                       and child:IsA("ScreenGui") then
+                        child.Enabled = false
+                    end
+                end)
+            end)
+        end)
+    end
+end
 
 local function formatDuration(secs)
     secs = math.max(0, math.floor(secs))
@@ -2168,34 +2106,13 @@ local function formatDuration(secs)
     return string.format("%02d:%02d:%02d", h, m, s)
 end
 
-interval("SSC_StatsUIUpdate", nil, 2, function()
+-- Slim UI updater: only refreshes the tournament tracker labels (Analytics tab removed).
+interval("SSC_TourneyUIUpdate", nil, 3, function()
     pcall(function()
-        local playerData = getPlayerData() or {}
-        local cash = tonumber(playerData.cash) or 0
-        local gems = tonumber(playerData.gems) or 0
-        local rebirth = tonumber(playerData.rebirth) or 0
-        local uptime = os.time() - (stats.sessionStart or os.time())
-
-        if labelCash and labelCash.Set then labelCash:Set("💰 Cash: $" .. formatCash(cash)) end
-        if labelGems and labelGems.Set then labelGems:Set("💎 Gems: " .. math.floor(gems)) end
-        if labelRebirth and labelRebirth.Set then labelRebirth:Set("🌟 Rebirth Level: " .. rebirth) end
-        if labelOpened and labelOpened.Set then labelOpened:Set("📦 Packs Opened: " .. stats.opened) end
-        if labelBought and labelBought.Set then labelBought:Set("🛒 Packs Bought: " .. stats.bought) end
-        if labelSold and labelSold.Set then labelSold:Set("💸 Cards Sold: " .. stats.sold) end
-        if labelCollects and labelCollects.Set then labelCollects:Set("💵 Collects: " .. stats.collects) end
-        if labelGemBuys and labelGemBuys.Set then labelGemBuys:Set("💎 Gem Buys: " .. stats.gemBuys) end
-        if labelSessionRebirths and labelSessionRebirths.Set then labelSessionRebirths:Set("🔄 Session Rebirths: " .. stats.rebirths) end
-        if labelWishes and labelWishes.Set then labelWishes:Set("✨ Wishes: " .. (stats.wishes or 0)) end
-        if labelTrophies and labelTrophies.Set then labelTrophies:Set("🏆 Trophies Crafted: " .. (stats.trophiesCrafted or 0)) end
-        if labelPotions and labelPotions.Set then labelPotions:Set("🧪 Potions Used: " .. (stats.potionsUsed or 0)) end
-        if labelUptime and labelUptime.Set then labelUptime:Set("⏱️ Uptime: " .. formatDuration(uptime)) end
-
         local tStatus = getTournamentStatus()
         local statusEmoji = tournamentState.inTournament and "🟢 in tournament"
             or (tStatus.isOpen and "🟡 open — joinable" or "⚪ idle")
-        if labelTourneyState and labelTourneyState.Set then
-            labelTourneyState:Set("Status: " .. statusEmoji)
-        end
+        if labelTourneyState and labelTourneyState.Set then labelTourneyState:Set("Status: " .. statusEmoji) end
         if labelTourneyJoins and labelTourneyJoins.Set then labelTourneyJoins:Set("Joined: " .. tournamentState.joins) end
         if labelTourneyWins  and labelTourneyWins.Set  then labelTourneyWins:Set("Top-3 finishes: " .. tournamentState.wins) end
         if labelTourneyNext  and labelTourneyNext.Set  then
