@@ -155,6 +155,19 @@ local function resolvePath(root, ...)
     return current
 end
 
+local function safeRequire(module, label, silent)
+    if not module or not module:IsA("ModuleScript") then
+        if not silent then warn("[Spin a Soccer Card] Not a module: " .. tostring(label)) end
+        return nil
+    end
+    local ok, result = pcall(require, module)
+    if not ok then
+        if not silent then warn("[Spin a Soccer Card] require failed for " .. tostring(label) .. ": " .. tostring(result)) end
+        return nil
+    end
+    return result
+end
+
 local function requirePath(label, ...)
     local module = resolvePath(RS, ...)
     if not module then
