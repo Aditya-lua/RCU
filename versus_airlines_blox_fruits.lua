@@ -162,6 +162,14 @@ local function SafeGetHRP(model)
     return nil
 end
 
+local function warnPcall(label, fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok then
+        warn("[BloxFruits] " .. tostring(label) .. ": " .. tostring(err))
+    end
+    return ok, err
+end
+
 local function SafeGetCombatFramework()
     local ok, result = pcall(function()
         return debug.getupvalues(require(game:GetService("Players").LocalPlayer.PlayerScripts.CombatFramework))
@@ -169,6 +177,7 @@ local function SafeGetCombatFramework()
     if ok and result then
         return result
     end
+    warn("[BloxFruits] CombatFramework load failed")
     return {}
 end
 
@@ -839,10 +848,11 @@ function Hop()
                 if Possible == true then
                     table.insert(AllIDs, ID)
                     task.wait()
-                    pcall(function()
+                    local tpOk, tpErr = pcall(function()
                         task.wait()
                         game:GetService("TeleportService"):TeleportToPlaceInstance(PlaceID, ID, game.Players.LocalPlayer)
                     end)
+                    if not tpOk then warn("[BloxFruits] Teleport failed: " .. tostring(tpErr)) end
                     task.wait(4)
                 end
             end
@@ -850,12 +860,13 @@ function Hop()
     end
     function Teleport()
         while task.wait() do
-            pcall(function()
+            local ok, err = pcall(function()
                 TPReturner()
                 if foundAnything ~= "" then
                     TPReturner()
                 end
             end)
+            if not ok then warn("[BloxFruits] Teleport loop error: " .. tostring(err)) end
         end
     end
     Teleport()
@@ -1852,7 +1863,8 @@ function EquipWeapon(ToolSe)
         if game.Players.LocalPlayer.Backpack:FindFirstChild(ToolSe) then
             Tool = game.Players.LocalPlayer.Backpack:FindFirstChild(ToolSe)
             task.wait(.1)
-            pcall(function() game.Players.LocalPlayer.Character.Humanoid:EquipTool(Tool) end)
+            local ok, err = pcall(function() game.Players.LocalPlayer.Character.Humanoid:EquipTool(Tool) end)
+            if not ok then warn("[BloxFruits] EquipWeapon failed for " .. tostring(ToolSe) .. ": " .. tostring(err)) end
         end
     end
 end
@@ -2449,8 +2461,12 @@ function TweenTempleLegit()
     local Client = game.Players.LocalPlayer
     local STOP = nil
     local STOPRL = nil
-    pcall(function() STOP = require(Client.PlayerScripts.CombatFramework.Particle) end)
-    pcall(function() STOPRL = require(game:GetService("ReplicatedStorage").CombatFramework.RigLib) end)
+    do
+        local ok1, err1 = pcall(function() STOP = require(Client.PlayerScripts.CombatFramework.Particle) end)
+        if not ok1 then warn("[BloxFruits] CombatFramework.Particle load failed: " .. tostring(err1)) end
+        local ok2, err2 = pcall(function() STOPRL = require(game:GetService("ReplicatedStorage").CombatFramework.RigLib) end)
+        if not ok2 then warn("[BloxFruits] CombatFramework.RigLib load failed: " .. tostring(err2)) end
+    end
     spawn(function()
         while task.wait() do
             pcall(function()
@@ -2542,7 +2558,15 @@ spawn(function()
     end
 end)
 
-local CamShake = pcall(function() return require(game.ReplicatedStorage.Util.CameraShaker) end) and require(game.ReplicatedStorage.Util.CameraShaker) or nil
+local CamShake
+do
+    local ok, result = pcall(function() return require(game.ReplicatedStorage.Util.CameraShaker) end)
+    if ok then
+        CamShake = result
+    else
+        warn("[BloxFruits] CameraShaker load failed: " .. tostring(result))
+    end
+end
 if CamShake then CamShake:Stop() end
 
     HttpService = game:GetService("HttpService")
@@ -2563,7 +2587,12 @@ if CamShake then CamShake:Stop() end
         if not isfolder(i) then
             makefolder(i)
         end
-        writefile(i .. "/" .. l, HttpService:JSONEncode(h))
+        local ok, err = pcall(function()
+            writefile(i .. "/" .. l, HttpService:JSONEncode(h))
+        end)
+        if not ok then
+            warn("[BloxFruits] SaveSettings failed: " .. tostring(err))
+        end
     end
     function ReadSetting()
         local s, o =
@@ -3265,9 +3294,16 @@ tabFarm:createToggle({
         _G.FastAttack = Value
     end
 })
-local CameraShaker = pcall(function() return require(game.ReplicatedStorage.Util.CameraShaker) end) and require(game.ReplicatedStorage.Util.CameraShaker) or nil
+local CameraShaker
+do
+    local csOk, csResult = pcall(function() return require(game.ReplicatedStorage.Util.CameraShaker) end)
+    if csOk then CameraShaker = csResult else warn("[BloxFruits] CameraShaker load failed: " .. tostring(csResult)) end
+end
 local cfrOk, CombatFrameworkR = pcall(function() return require(game:GetService("Players").LocalPlayer.PlayerScripts.CombatFramework) end)
-if not cfrOk then CombatFrameworkR = nil end
+if not cfrOk then
+    warn("[BloxFruits] CombatFramework load failed: " .. tostring(CombatFrameworkR))
+    CombatFrameworkR = nil
+end
 y = CombatFrameworkR and debug.getupvalues(CombatFrameworkR)[2] or nil
 spawn(function()
     game:GetService("RunService").RenderStepped:Connect(function()
@@ -7022,7 +7058,8 @@ spawn(function()
                                                     [1] = v.HumanoidRootPart.Position,
                                                     [2] = v.HumanoidRootPart
                                                 }
-                                                pcall(function() game:GetService("Players").LocalPlayer.Character[SelectWeaponGun].RemoteFunctionShoot:InvokeServer(unpack(args)) end)
+                                                local shootOk, shootErr = pcall(function() game:GetService("Players").LocalPlayer.Character[SelectWeaponGun].RemoteFunctionShoot:InvokeServer(unpack(args)) end)
+                                                if not shootOk then warn("[BloxFruits] RemoteFunctionShoot failed: " .. tostring(shootErr)) end
                                             else
                                                 AutoHaki()
                                                 EquipWeapon(_G.SelectWeapon)
@@ -10652,7 +10689,8 @@ spawn(function()
                                                 [1] = game.Players:FindFirstChild(_G.SelectPly).Character.HumanoidRootPart.Position,
                                                 [2] = game.Players:FindFirstChild(_G.SelectPly).Character.HumanoidRootPart
                                             }
-                                            pcall(function() game:GetService("Players").LocalPlayer.Character[SelectWeaponGun].RemoteFunctionShoot:InvokeServer(unpack(args)) end)
+                                            local shootOk, shootErr = pcall(function() game:GetService("Players").LocalPlayer.Character[SelectWeaponGun].RemoteFunctionShoot:InvokeServer(unpack(args)) end)
+                                            if not shootOk then warn("[BloxFruits] RemoteFunctionShoot (PVP) failed: " .. tostring(shootErr)) end
                                         else
                                             game:GetService("VirtualUser"):CaptureController()
                                             game:GetService("VirtualUser"):Button1Down(Vector2.new(1280,672))
@@ -10698,7 +10736,8 @@ spawn(function()
                     [1] = game:GetService("Players"):FindFirstChild(PlayerSelectAimbot).Character.HumanoidRootPart.Position,
                     [2] = game:GetService("Players"):FindFirstChild(PlayerSelectAimbot).Character.HumanoidRootPart
                 }
-                pcall(function() game:GetService("Players").LocalPlayer.Character[SelectWeaponGun].RemoteFunctionShoot:InvokeServer(unpack(args)) end)
+                local shootOk, shootErr = pcall(function() game:GetService("Players").LocalPlayer.Character[SelectWeaponGun].RemoteFunctionShoot:InvokeServer(unpack(args)) end)
+                if not shootOk then warn("[BloxFruits] RemoteFunctionShoot (aimbot) failed: " .. tostring(shootErr)) end
                 game:GetService'VirtualUser':CaptureController()
                 game:GetService'VirtualUser':Button1Down(Vector2.new(1280, 672))
             end)

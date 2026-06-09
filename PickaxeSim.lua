@@ -372,10 +372,13 @@ local function doClaimIndex() invoke("Claim Index Reward") end
 local function doClaimDrill() fire("Claim Drill") end
 local function doClaimLuckyBlocks()
     local area
-    pcall(function()
+    local ok, err = pcall(function()
         area = Workspace.Worlds.Spawn:FindFirstChild("LuckyBlocks")
         area = area and area:FindFirstChild("Area")
     end)
+    if not ok then
+        warn("[Pickaxe Sim] LuckyBlocks area lookup failed: " .. tostring(err))
+    end
     if not area then
         for _, d in ipairs(Workspace:GetDescendants()) do
             if d.Name == "LuckyBlock" or (d:IsA("Model") and d:GetAttribute("LuckyBlock")) then
@@ -1006,7 +1009,10 @@ task.spawn(function()
             tostring(getStat("CurrentWorld", "?")),
             tostring(getStat("RewardTimer", 0))
         )
-        if statsLabel and statsLabel.Set then pcall(statsLabel.Set, statsLabel, txt) end
+        if statsLabel and statsLabel.Set then
+            local ok, err = pcall(statsLabel.Set, statsLabel, txt)
+            if not ok then warn("[Pickaxe Sim] Stats label update failed: " .. tostring(err)) end
+        end
     end
 end)
 

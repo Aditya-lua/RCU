@@ -291,9 +291,12 @@ local function fireRemote(remote, ...)
     if not remote or type(remote.FireServer) ~= "function" then return false end
     local args = { ... }
     local argCount = select("#", ...)
-    local ok = pcall(function()
+    local ok, err = pcall(function()
         remote:FireServer(tableUnpack(args, 1, argCount))
     end)
+    if not ok then
+        warn("[SSC] fireRemote failed: " .. tostring(err))
+    end
     return ok
 end
 
@@ -304,8 +307,10 @@ local function invokeRemote(remote, ...)
     local ok, result = pcall(function()
         return remote:InvokeServer(tableUnpack(args, 1, argCount))
     end)
-    if ok then return result end
-    return nil
+    if not ok then
+        warn("[SSC] invokeRemote failed: " .. tostring(result))
+    end
+    return ok and result or nil
 end
 
 local function getPlayerData()
@@ -424,7 +429,7 @@ local function setDropdownValues(dropdown, flagName, values)
     values = values or {}
     Library.Flags[flagName] = values
 
-    pcall(function()
+    local ok, err = pcall(function()
         if dropdown and type(dropdown.Set) == "function" then
             dropdown:Set(values)
         elseif dropdown and type(dropdown.set) == "function" then
@@ -433,6 +438,9 @@ local function setDropdownValues(dropdown, flagName, values)
             dropdown:Update(values)
         end
     end)
+    if not ok then
+        warn("[SSC] setDropdownValues failed for '" .. tostring(flagName) .. "': " .. tostring(err))
+    end
 end
 
 local function getPackList()
@@ -813,7 +821,7 @@ local function dispatchWebhook(payload)
         payload.content = "<@" .. webhookPingId .. ">"
     end
 
-    pcall(function()
+    local ok, err = pcall(function()
         httpRequest({
             Url = webhookUrl,
             Method = "POST",
@@ -821,6 +829,9 @@ local function dispatchWebhook(payload)
             Body = HttpService:JSONEncode(payload),
         })
     end)
+    if not ok then
+        warn("[SSC] Webhook dispatch failed: " .. tostring(err))
+    end
 end
 
 local globals = (getgenv and getgenv()) or _G
@@ -1319,9 +1330,12 @@ TabMisc:createButton({
     Name = "Bug Report",
     Description = "Opens the Versus bug reporter.",
     Callback = function()
-        pcall(function()
+        local ok, err = pcall(function()
             Library:PromptBugReport()
         end)
+        if not ok then
+            warn("[SSC] Bug report prompt failed: " .. tostring(err))
+        end
     end,
 })
 
@@ -1344,9 +1358,14 @@ TabExtras:createButton({
     Description = "One-shot wish.",
     Callback = function()
         if not funcs.PerformWish then notify("Wish", "PerformWish remote missing.", "warning") return end
-        pcall(function() funcs.PerformWish:InvokeServer() end)
-        stats.wishes += 1
-        notify("Wish", "Wish fired.", "info")
+        local ok, err = pcall(function() funcs.PerformWish:InvokeServer() end)
+        if ok then
+            stats.wishes += 1
+            notify("Wish", "Wish fired.", "info")
+        else
+            warn("[SSC] PerformWish failed: " .. tostring(err))
+            notify("Wish", "Wish failed: " .. tostring(err), "danger")
+        end
     end,
 })
 
@@ -1670,8 +1689,12 @@ end, { persistent = true })
 -- =============================================
 interval("AutoWish", "AutoWish", 5, function()
     if not funcs.PerformWish then return end
-    local ok = pcall(function() funcs.PerformWish:InvokeServer() end)
-    if ok then stats.wishes += 1 end
+    local ok, err = pcall(function() funcs.PerformWish:InvokeServer() end)
+    if ok then
+        stats.wishes += 1
+    else
+        warn("[SSC] AutoWish failed: " .. tostring(err))
+    end
 end, { persistent = true })
 
 -- =============================================
