@@ -658,26 +658,29 @@ for attempt = 1, maxRetries do
                     if enabled then
                         autoBuyMerchantThread = task.spawn(function()
                             while isAutoBuyMerchant do
-                                pcall(function()
+                                local ok, err = pcall(function()
                                     -- Get current stock
                                     local stock = HiveService.honeyShopStock:Get()
                                     if stock and type(stock) == "table" then
                                         for slot = 1, #stock do
                                             if not isAutoBuyMerchant then break end
-                                            pcall(function()
+                                            local buyOk, buyErr = pcall(function()
                                                 HiveService:buyHoneyMerchant(slot)
                                             end)
+                                            if not buyOk then warn("[RCU] buyHoneyMerchant slot " .. slot .. " failed: " .. tostring(buyErr)) end
                                             task.wait(0.5)
                                         end
                                     else
                                         -- Try buying slots 1-6 blindly
                                         for slot = 1, 6 do
                                             if not isAutoBuyMerchant then break end
-                                            pcall(function() HiveService:buyHoneyMerchant(slot) end)
+                                            local buyOk, buyErr = pcall(function() HiveService:buyHoneyMerchant(slot) end)
+                                            if not buyOk then warn("[RCU] buyHoneyMerchant slot " .. slot .. " failed: " .. tostring(buyErr)) end
                                             task.wait(0.5)
                                         end
                                     end
                                 end)
+                                if not ok then warn("[RCU] Auto buy honey merchant cycle failed: " .. tostring(err)) end
                                 task.wait(30)
                             end
                         end)
@@ -696,13 +699,15 @@ for attempt = 1, maxRetries do
                     if enabled then
                         _G.AutoBuyHoneyShopThread = task.spawn(function()
                             while _G.AutoBuyHoneyShopEnabled do
-                                pcall(function()
+                                local ok, err = pcall(function()
                                     for slot = 1, 10 do
                                         if not _G.AutoBuyHoneyShopEnabled then break end
-                                        pcall(function() HiveService:buyHoneyShop(slot) end)
+                                        local buyOk, buyErr = pcall(function() HiveService:buyHoneyShop(slot) end)
+                                        if not buyOk then warn("[RCU] buyHoneyShop slot " .. slot .. " failed: " .. tostring(buyErr)) end
                                         task.wait(0.5)
                                     end
                                 end)
+                                if not ok then warn("[RCU] Auto buy honey shop cycle failed: " .. tostring(err)) end
                                 task.wait(30)
                             end
                         end)
@@ -988,14 +993,16 @@ for attempt = 1, maxRetries do
                             local delay = tonumber(rebirthDelayInput.Value)
                             if not delay or delay == 0 then
                                 -- Use the dropdown selection (calls performRebirth)
-                                local result = pcall(performRebirth)
+                                local ok, err = pcall(performRebirth)
+                                if not ok then warn("[RCU] Auto rebirth failed: " .. tostring(err)) end
                                 task.wait(0.2)
                             else
                                 -- Use the "best option" logic with delay
                                 task.wait(delay)
                                 local bestOption = GetBestRebirthOption()
                                 if bestOption then
-                                    local result = pcall(function() RebirthService:rebirth(bestOption) end)
+                                    local ok, err = pcall(function() RebirthService:rebirth(bestOption) end)
+                                    if not ok then warn("[RCU] Rebirth failed for " .. tostring(bestOption) .. ": " .. tostring(err)) end
                                 end
                                 task.wait(0.1)
                             end
@@ -1510,9 +1517,11 @@ for attempt = 1, maxRetries do
                                                     if petId then
                                                         local success, err = pcall(function() PetService:craft({[1]=petId}, false, 1) end)
                                                         if not success then
+                                                            warn("[RCU] Pet craft failed for " .. tostring(displayName) .. ": " .. tostring(err))
                                                         end
                                                         task.wait(0.5)
                                                     else
+                                                        warn("[RCU] Pet ID not found for: " .. tostring(displayName))
                                                     end
                                                 end
                                             else
@@ -3983,7 +3992,8 @@ for attempt = 1, maxRetries do
                                                     end
                                                 end
                                                 if bestDiceId and maxAmount > 0 then
-                                                    pcall(function() AuraService:roll(bestDiceId) end)
+                                                    local rollOk, rollErr = pcall(function() AuraService:roll(bestDiceId) end)
+                                                    if not rollOk then warn("[RCU] Aura roll failed: " .. tostring(rollErr)) end
                                                 end
                                                 
                                             elseif questType == "collectFruits" then
@@ -4028,9 +4038,10 @@ for attempt = 1, maxRetries do
                                                 if bestPotionId and maxAmount > 0 then
                                                     local potionsNeeded = math.min(required - currentProgress, maxAmount)
                                                     if potionsNeeded > 0 then
-                                                        pcall(function() 
+                                                        local potOk, potErr = pcall(function() 
                                                             Knit.GetService("InventoryService"):useItem(bestPotionId, {use = potionsNeeded}) 
                                                         end)
+                                                        if not potOk then warn("[RCU] Use potion failed: " .. tostring(potErr)) end
                                                     end
                                                 end
                                                 
@@ -4767,7 +4778,8 @@ for attempt = 1, maxRetries do
                                     end
                                 end
                                 if #orbsToCollect > 0 then
-                                    pcall(function() OrbService.collectOrbs:Fire(orbsToCollect) end)
+                                    local orbOk, orbErr = pcall(function() OrbService.collectOrbs:Fire(orbsToCollect) end)
+                                    if not orbOk then warn("[RCU] Orb collection failed: " .. tostring(orbErr)) end
                                     for _, orbName in ipairs(orbsToCollect) do local orb = orbsFolder:FindFirstChild(orbName); if orb then orb:Destroy() end end
                                 end
                             end
@@ -4870,6 +4882,7 @@ for attempt = 1, maxRetries do
                                 end)
 
                                 if not success then
+                                    warn("[RCU] Auto claim playtime failed: " .. tostring(err))
                                 end
 
                                 task.wait(10)
@@ -5026,6 +5039,10 @@ for attempt = 1, maxRetries do
                             end
                         end
                     end)
+                    if not success then
+                        warn("[RCU] Tutorial completion failed: " .. tostring(err))
+                        Library:Notify({Title = "Tutorial", Content = "Failed: " .. tostring(err), Duration = 5})
+                    end
                 end
             })
 
@@ -5036,7 +5053,8 @@ for attempt = 1, maxRetries do
                     isAutoSpinEnabled = enabled
                     task.spawn(function()
                         while isAutoSpinEnabled do
-                            pcall(function() RewardService:ancientWheelSpin() end)
+                            local ok, err = pcall(function() RewardService:ancientWheelSpin() end)
+                            if not ok then warn("[RCU] Ancient wheel spin failed: " .. tostring(err)) end
                             task.wait(0.01)
                         end
                     end)
@@ -5051,7 +5069,8 @@ for attempt = 1, maxRetries do
                     isAutoSpinEnabled1 = enabled
                     task.spawn(function()
                         while isAutoSpinEnabled1 do
-                            pcall(function() ClanService:clanWheelSpin() end)
+                            local ok, err = pcall(function() ClanService:clanWheelSpin() end)
+                            if not ok then warn("[RCU] Clan wheel spin failed: " .. tostring(err)) end
                             task.wait(60)
                         end
                     end)
@@ -5065,7 +5084,8 @@ for attempt = 1, maxRetries do
                     isAutoSpinEnabled12 = enabled
                     task.spawn(function()
                         while isAutoSpinEnabled12 do
-                            pcall(function() RewardService:boostWheelSpin() end)
+                            local ok, err = pcall(function() RewardService:boostWheelSpin() end)
+                            if not ok then warn("[RCU] Boost wheel spin failed: " .. tostring(err)) end
                             task.wait(60)
                         end
                     end)
@@ -5082,7 +5102,8 @@ for attempt = 1, maxRetries do
                     isAutoAdminWheelSpinEnabled = enabled
                     task.spawn(function()
                         while isAutoAdminWheelSpinEnabled do
-                            pcall(function() Knit.GetService("AdminAbuseService"):adminWheelSpin() end)
+                            local ok, err = pcall(function() Knit.GetService("AdminAbuseService"):adminWheelSpin() end)
+                            if not ok then warn("[RCU] Admin wheel spin failed: " .. tostring(err)) end
                             task.wait(5)
                         end
                     end)
@@ -5527,7 +5548,6 @@ for attempt = 1, maxRetries do
                                             InventoryService:useItem(itemInfo.invId, "1")
                                             task.wait(0.2) -- Delay between each firing
                                         end
-                                    else
                                     end
                                 end)
                                 if not success then warn("ERROR in Auto-Use check for "..moduleConfig.displayName..": "..tostring(err)) end
@@ -5737,15 +5757,12 @@ for attempt = 1, maxRetries do
                                     if success then
                                         claimedThisCycle = claimedThisCycle + 1
                                     else
+                                        warn("[RCU] Season pass claim failed (tier " .. tier .. ", " .. trackName .. "): " .. tostring(err))
                                     end
                                     
                                     task.wait(0.5)
                                 end
                             end
-                        end
-                        
-                        if claimedThisCycle > 0 then
-                        else
                         end
                         
                         -- Check if we should reset
@@ -5806,8 +5823,8 @@ for attempt = 1, maxRetries do
                                 SeasonService:resetPass()
                             end)
                             
-                            if success then
-                            else
+                            if not success then
+                                warn("[RCU] Season pass reset failed: " .. tostring(err))
                             end
                             task.wait(1)
                         end
@@ -5823,7 +5840,7 @@ for attempt = 1, maxRetries do
 
             updateDiceStatus = function()
                 local statusLines, hasSelected = {}, false
-                pcall(function()
+                local ok, err = pcall(function()
                     DataController:waitForData()
                     local playerData = DataController:getData()
                     for diceName, isSelected in pairs(selectedDiceItems) do
@@ -5834,6 +5851,7 @@ for attempt = 1, maxRetries do
                         end
                     end
                 end)
+                if not ok then warn("[RCU] Dice status update failed: " .. tostring(err)) end
                 return not hasSelected and "No dice selected" or table.concat(statusLines, "\n")
             end
 
@@ -5854,7 +5872,10 @@ for attempt = 1, maxRetries do
                                         if isSelected then local item=Util.itemUtils.getItemFromName(playerData, diceOptions[diceName]); if item and item:getAmount()>0 then table.insert(availableDice, diceOptions[diceName]) end end
                                     end
                                 end)
-                                if #availableDice > 0 then pcall(function() AuraService:roll(availableDice[math.random(1,#availableDice)]) end) end
+                                if #availableDice > 0 then
+                                    local rollOk, rollErr = pcall(function() AuraService:roll(availableDice[math.random(1,#availableDice)]) end)
+                                    if not rollOk then warn("[RCU] Aura dice roll failed: " .. tostring(rollErr)) end
+                                end
                                 task.wait(1)
                             end
                         end)
@@ -5974,7 +5995,7 @@ for attempt = 1, maxRetries do
                     end
 
                     local allPetsMasterList = {}
-                    pcall(function()
+                    local petListOk, petListErr = pcall(function()
                         for petId, petRawData in pairs(playerData.inventory.pet) do
                             local petObject = Util.itemUtils.createItemFromData(petRawData)
                             if petObject then
@@ -5986,6 +6007,7 @@ for attempt = 1, maxRetries do
                             end
                         end
                     end)
+                    if not petListOk then warn("[RCU] Pet list build failed: " .. tostring(petListErr)) end
                     table.sort(allPetsMasterList, function(a, b) return a.multiplier > b.multiplier end)
 
                     local petsToKeepIds = {}
@@ -6098,7 +6120,8 @@ for attempt = 1, maxRetries do
                                 if #allMeteors > 0 then
                                     while #allMeteors > 0 and isAutoBreakingMeteors do
                                         for _, meteor in ipairs(allMeteors) do
-                                            pcall(function() local id=meteor:GetAttribute("meteorId"); if id then EventService.damageMeteor:Fire(id) end end)
+                                            local mOk, mErr = pcall(function() local id=meteor:GetAttribute("meteorId"); if id then EventService.damageMeteor:Fire(id) end end)
+                                            if not mOk then warn("[RCU] Meteor damage failed: " .. tostring(mErr)) end
                                         end
                                         task.wait()
                                         allMeteors = CollectionService:GetTagged("Meteor")
@@ -6377,8 +6400,12 @@ for attempt = 1, maxRetries do
             local MountSection = Tabs.Visuals:AddSection("Mounts / Hoverboards")
             local MountsList = nil
             local MountController = nil
-            pcall(function() MountsList = require(ReplicatedStorage.Shared.List.Items.Mounts) end)
-            pcall(function() MountController = Knit.GetController("MountController") end)
+            do
+                local ok1, err1 = pcall(function() MountsList = require(ReplicatedStorage.Shared.List.Items.Mounts) end)
+                if not ok1 then warn("[RCU] MountsList load failed: " .. tostring(err1)) end
+                local ok2, err2 = pcall(function() MountController = Knit.GetController("MountController") end)
+                if not ok2 then warn("[RCU] MountController load failed: " .. tostring(err2)) end
+            end
 
             local function getMountNames()
                 local list = {"None"}
@@ -6461,7 +6488,10 @@ for attempt = 1, maxRetries do
             local EggsModule = require(ReplicatedStorage.Shared.List.Pets.Eggs)
 
             local gameName = "Unknown Game"
-            pcall(function() gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name end)
+            do
+                local gnOk, gnErr = pcall(function() gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name end)
+                if not gnOk then warn("[RCU] Game name lookup failed: " .. tostring(gnErr)) end
+            end
 
             local thumbCache = {}
             local webhookQueue = {}
@@ -6563,12 +6593,13 @@ for attempt = 1, maxRetries do
                             table.insert(embeds, embed)
                         end
                         if #embeds > 0 and WEBHOOK_URL ~= "" then
-                            pcall(function()
+                            local ok, err = pcall(function()
                                 requestFunc({Url=WEBHOOK_URL, Method="POST",
                                     Headers={["Content-Type"]="application/json"},
                                     Body=HttpService:JSONEncode({content=pingMsg, embeds=embeds})
                                 })
                             end)
+                            if not ok then warn("[RCU] Webhook dispatch failed: " .. tostring(err)) end
                         end
                         task.wait(1)
                     end
