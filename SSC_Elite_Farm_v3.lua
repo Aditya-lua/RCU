@@ -1,129 +1,53 @@
-local request = (syn and syn.request) or (http and http.request) or http_request;
+-----------------------------------------------------------------
+-- Shared utilities (see shared/ directory)
+-----------------------------------------------------------------
+local SHARED_ROOT = "https://raw.githubusercontent.com/Aditya-lua/RCU/main/shared/"
+local Services   = loadstring(game:HttpGet(SHARED_ROOT .. "Services.lua"))()
+local UIHelpers  = loadstring(game:HttpGet(SHARED_ROOT .. "UI.lua"))()
+local TableUtils = loadstring(game:HttpGet(SHARED_ROOT .. "TableUtils.lua"))()
+local NetUtils   = loadstring(game:HttpGet(SHARED_ROOT .. "Net.lua"))()
 
--- Essential services
-local TweenService = game:GetService("TweenService")
-local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local LightingService = game:GetService("Lighting")
-local VirtualUser = game:GetService("VirtualUser")
-local CoreGui = game:GetService("CoreGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local MarketplaceService = game:GetService("MarketplaceService")
-local CollectionService = game:GetService("CollectionService")
-local Players = game:GetService("Players")
-local PathfindingService = game:GetService("PathfindingService")
-local Workspace = game:GetService("Workspace")
-local Camera = Workspace.Camera
+-- Re-export commonly used services for compatibility with the rest of this file
+local request          = Services.request
+local TweenService     = Services.TweenService
+local HttpService      = Services.HttpService
+local RunService       = Services.RunService
+local UserInputService = Services.UserInputService
+local LightingService  = Services.Lighting
+local VirtualUser      = Services.VirtualUser
+local CoreGui          = Services.CoreGui
+local ReplicatedStorage= Services.ReplicatedStorage
+local MarketplaceService=Services.MarketplaceService
+local CollectionService= Services.CollectionService
+local Players          = Services.Players
+local PathfindingService=Services.PathfindingService
+local Workspace        = Services.Workspace
+local Camera           = Services.Camera
 
-local client = Players.LocalPlayer
+local client = Services.LocalPlayer
 
 -- Load UI
 print("Loading Library...")
 
-local Library = loadstring(game:HttpGet("https://versusairlines.top/scripts/NewLibrary.lua"))()
-
-local Setup = Library:Setup({
-    Location = CoreGui,
-    OpenCloseLocation = "Bottom Left" -- Top Right, Bottom Left, Center Left, Etc
+local Library, Setup = UIHelpers.loadVersusLibrary(Services, {
+    OpenCloseLocation = "Bottom Left",
 })
 
 -- Prevent player from being idled out
-client.Idled:Connect(function()
-    VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-    wait(1)
-    VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-end)
+UIHelpers.setupAntiIdle(Services)
 
 -----------------------------------------------------------------
 
--- interval: registers a heartbeat-driven loop ONCE at script load.
--- The loop is gated by the flag (or runs always if flag==nil), so toggling
--- the UI on/off instantly enables/disables the loop without needing the
--- Callback to re-register anything.
---
--- Signature:
---   interval(tag, flag, delayTime, callback, opts?)
---   interval(tag, flag, dynamicDelayFn, callback, opts?)   -- delay can be a function returning a number
---
--- `flag` may be nil → loop runs unconditionally (used for housekeeping).
--- `delayTime` may be a number OR a function returning a number (dynamic).
+-- interval / notify / prettyPrint — delegated to shared modules
 local function interval(tag, flag, delayTime, callback, opts)
-    Library:CleanupConnectionsByTag(tag)
-
-    local isDynamicDelay = type(delayTime) == "function"
-    local function resolveDelay()
-        local d
-        if isDynamicDelay then
-            local ok, v = pcall(delayTime)
-            d = ok and tonumber(v) or 0.1
-        else
-            d = tonumber(delayTime) or 0.1
-        end
-        if opts and tonumber(opts.minDelay) then
-            d = math.max(d, opts.minDelay)
-        end
-        return math.max(d, 0.03)
-    end
-
-    local last = 0
-    local running = false
-    local slowWarnAt = 0
-
-    local conn = RunService.Heartbeat:Connect(function()
-        -- Gate by flag (nil flag = always run)
-        if flag ~= nil and not Library.Flags[flag] then return end
-
-        local current = os.clock()
-        if running or current - last < resolveDelay() then
-            return
-        end
-
-        last = current
-        running = true
-
-        task.spawn(function()
-            local startedAt = os.clock()
-            local ok, err = pcall(callback)
-            local elapsed = os.clock() - startedAt
-
-            if not ok then
-                warn("[interval:" .. tostring(tag) .. "]", err)
-            elseif elapsed > 10 and os.clock() - slowWarnAt > 5 then
-                slowWarnAt = os.clock()
-                warn(string.format("[SSC] slow interval %s took %.3fs", tostring(tag), elapsed))
-            end
-
-            running = false
-        end)
-    end)
-
-    Library:TrackConnection(conn, tag)
+    UIHelpers.interval(Library, Services, tag, flag, delayTime, callback, opts)
 end
 
-local function notify(title, desc, style) -- style examples: "info" | "warning" | "danger"
-    Library:createDisplayMessage(title, desc, {
-        { text = "OK" },
-    }, style or "info")
+local function notify(title, desc, style)
+    UIHelpers.notify(Library, title, desc, style)
 end
 
-local function prettyPrint(data, indent)
-    indent = indent or 0
-    local prefix = string.rep("    ", indent)
-    if type(data) ~= "table" then
-        print(prefix .. tostring(data))
-        return
-    end
-    for k, v in pairs(data) do
-        if type(v) == "table" then
-            print(prefix .. tostring(k) .. " = {")
-            prettyPrint(v, indent + 1)
-            print(prefix .. "}")
-        else
-            print(prefix .. tostring(k) .. " = " .. tostring(v))
-        end
-    end
-end
+local prettyPrint = TableUtils.prettyPrint
 
 ----------------------------------------------------------------- https://versusairlines.top/developers.html
 
@@ -146,12 +70,10 @@ local COLLECT_SLOT_WAIT = 0.1
 local INVENTORY_YIELD_EVERY = 50
 
 local function lightYield(index)
-    if (tonumber(index) or 0) % INVENTORY_YIELD_EVERY == 0 then
-        task.wait()
-    end
+    TableUtils.lightYield(index, INVENTORY_YIELD_EVERY)
 end
 
-local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+local httpRequest = Services.request
 local tableUnpack = table.unpack or unpack
 local webhookUrl = ""
 local webhookPingId = ""
@@ -164,35 +86,11 @@ local GEM_SHOP_MAP = {
     ["Scarlet Item"] = "scarlet",
 }
 
-local function resolvePath(root, ...)
-    local current = root
-    for _, name in ipairs({ ... }) do
-        if not current then return nil end
-        current = current:FindFirstChild(tostring(name))
-    end
-    return current
-end
-
-local function safeRequire(module, label, silent)
-    if not module or not module:IsA("ModuleScript") then
-        if not silent then warn("[Spin a Soccer Card] Not a module: " .. tostring(label)) end
-        return nil
-    end
-    local ok, result = pcall(require, module)
-    if not ok then
-        if not silent then warn("[Spin a Soccer Card] require failed for " .. tostring(label) .. ": " .. tostring(result)) end
-        return nil
-    end
-    return result
-end
+local resolvePath = NetUtils.resolvePath
+local safeRequire = NetUtils.safeRequire
 
 local function requirePath(label, ...)
-    local module = resolvePath(RS, ...)
-    if not module then
-        warn("[Spin a Soccer Card] Missing module: " .. tostring(label))
-        return nil
-    end
-    return safeRequire(module, label, true)
+    return NetUtils.requirePath(RS, label, ...)
 end
 
 local Networker = requirePath("Networker", "Source", "Shared", "Networker")
@@ -287,26 +185,8 @@ local tournamentState = {
     wins = 0,
 }
 
-local function fireRemote(remote, ...)
-    if not remote or type(remote.FireServer) ~= "function" then return false end
-    local args = { ... }
-    local argCount = select("#", ...)
-    local ok = pcall(function()
-        remote:FireServer(tableUnpack(args, 1, argCount))
-    end)
-    return ok
-end
-
-local function invokeRemote(remote, ...)
-    if not remote or type(remote.InvokeServer) ~= "function" then return nil end
-    local args = { ... }
-    local argCount = select("#", ...)
-    local ok, result = pcall(function()
-        return remote:InvokeServer(tableUnpack(args, 1, argCount))
-    end)
-    if ok then return result end
-    return nil
-end
+local fireRemote   = NetUtils.fireRemote
+local invokeRemote = NetUtils.invokeRemote
 
 local function getPlayerData()
     if type(PlayerStore) ~= "function" then return nil end
@@ -342,19 +222,7 @@ local function getRebirthLevel()
     return tonumber(data and data.rebirth) or 0
 end
 
-local function formatCash(n)
-    n = tonumber(n) or 0
-    if n >= 1e12 then
-        return string.format("%.2fT", n / 1e12)
-    elseif n >= 1e9 then
-        return string.format("%.2fB", n / 1e9)
-    elseif n >= 1e6 then
-        return string.format("%.2fM", n / 1e6)
-    elseif n >= 1e3 then
-        return string.format("%.1fK", n / 1e3)
-    end
-    return tostring(math.floor(n))
-end
+local formatCash = TableUtils.formatCash
 
 -- Map a card rarity name to a Discord embed color (decimal int).
 -- Matches Roblox/game color palette so embeds visually match the card.

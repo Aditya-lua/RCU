@@ -18,29 +18,8 @@ for attempt = 1, maxRetries do
         local userid = player.UserId
         local username = player.Name
 
-        -- Thread Manager - Add this here
-        local ThreadManager = {}
-        ThreadManager.threads = {}
-
-        function ThreadManager:Add(key, thread)
-            self:Stop(key)
-            self.threads[key] = thread
-            return thread
-        end
-
-        function ThreadManager:Stop(key)
-            if self.threads[key] then
-                pcall(function() task.cancel(self.threads[key]) end)
-                self.threads[key] = nil
-            end
-        end
-
-        function ThreadManager:StopAll()
-            for key, thread in pairs(self.threads) do
-                pcall(function() task.cancel(thread) end)
-            end
-            self.threads = {}
-        end
+        -- Thread Manager — loaded from shared module (see shared/ThreadManager.lua)
+        local ThreadManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/Aditya-lua/RCU/main/shared/ThreadManager.lua"))()
 
 
         local Library = loadstring(game:HttpGetAsync("https://github.com/ActualMasterOogway/Fluent-Renewed/releases/latest/download/Fluent.luau"))()

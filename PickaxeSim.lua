@@ -8,81 +8,51 @@
 --==============================================================================
 
 --------------------------------------------------------------------------------
--- Standard services (per the template)
+-- Shared utilities (see shared/ directory)
 --------------------------------------------------------------------------------
-local request = (syn and syn.request) or (http and http.request) or http_request
-local TweenService     = game:GetService("TweenService")
-local HttpService      = game:GetService("HttpService")
-local RunService       = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local LightingService  = game:GetService("Lighting")
-local VirtualUser      = game:GetService("VirtualUser")
-local CoreGui          = game:GetService("CoreGui")
-local ReplicatedStorage= game:GetService("ReplicatedStorage")
-local MarketplaceService=game:GetService("MarketplaceService")
-local CollectionService= game:GetService("CollectionService")
-local Players          = game:GetService("Players")
-local Workspace        = game:GetService("Workspace")
-local Camera           = Workspace.Camera
+local SHARED_ROOT = "https://raw.githubusercontent.com/Aditya-lua/RCU/main/shared/"
+local Services   = loadstring(game:HttpGet(SHARED_ROOT .. "Services.lua"))()
+local UIHelpers  = loadstring(game:HttpGet(SHARED_ROOT .. "UI.lua"))()
+local TableUtils = loadstring(game:HttpGet(SHARED_ROOT .. "TableUtils.lua"))()
 
-local client = Players.LocalPlayer
+-- Re-export commonly used services for compatibility with the rest of this file
+local request          = Services.request
+local TweenService     = Services.TweenService
+local HttpService      = Services.HttpService
+local RunService       = Services.RunService
+local UserInputService = Services.UserInputService
+local LightingService  = Services.Lighting
+local VirtualUser      = Services.VirtualUser
+local CoreGui          = Services.CoreGui
+local ReplicatedStorage= Services.ReplicatedStorage
+local MarketplaceService=Services.MarketplaceService
+local CollectionService= Services.CollectionService
+local Players          = Services.Players
+local Workspace        = Services.Workspace
+local Camera           = Services.Camera
+
+local client = Services.LocalPlayer
 
 --------------------------------------------------------------------------------
 -- Load UI
 --------------------------------------------------------------------------------
 print("[Pickaxe Sim] Loading Versus Lib…")
-local Library = loadstring(game:HttpGet("https://versusairlines.top/scripts/NewLibrary.lua"))()
-local Setup = Library:Setup({
-    Location = CoreGui,
+local Library, Setup = UIHelpers.loadVersusLibrary(Services, {
     OpenCloseLocation = "Top Center",
 })
 
 -- Anti-idle
-client.Idled:Connect(function()
-    VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-    wait(1)
-    VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-end)
+UIHelpers.setupAntiIdle(Services)
 
 --==============================================================================
--- Template helpers (interval + notify)
+-- Template helpers (interval + notify) — delegated to shared/UI.lua
 --==============================================================================
 local function interval(tag, flag, delayTime, callback)
-    Library:CleanupConnectionsByTag(tag)
-    delayTime = math.max(tonumber(delayTime) or 0.1, 0.05)
-    if not Library.Flags[flag] then return end
-
-    local last = 0
-    local running = false
-    local slowWarnAt = 0
-    local conn = RunService.Heartbeat:Connect(function()
-        if not Library.Flags[flag] then
-            Library:CleanupConnectionsByTag(tag)
-            return
-        end
-        local current = os.clock()
-        if running or current - last < delayTime then return end
-        last = current
-        running = true
-        task.spawn(function()
-            local startedAt = os.clock()
-            local ok, err = pcall(callback)
-            local elapsed = os.clock() - startedAt
-            if not ok then
-                warn("[interval:" .. tostring(tag) .. "]", err)
-            elseif elapsed > 10 and os.clock() - slowWarnAt > 5 then
-                slowWarnAt = os.clock()
-                warn(string.format("[Versus] slow interval %s took %.3fs", tostring(tag), elapsed))
-            end
-            task.wait()
-            running = false
-        end)
-    end)
-    Library:TrackConnection(conn, tag)
+    UIHelpers.interval(Library, Services, tag, flag, delayTime, callback)
 end
 
 local function notify(title, desc, style)
-    Library:createDisplayMessage(title, desc, { { text = "OK" } }, style or "info")
+    UIHelpers.notify(Library, title, desc, style)
 end
 
 --==============================================================================
@@ -118,30 +88,8 @@ local function safeRequire(name)
     return val
 end
 
-local function sortedKeys(tbl, orderField)
-    local keys = {}
-    for k in pairs(tbl) do table.insert(keys, k) end
-    if orderField then
-        table.sort(keys, function(a, b)
-            local oa = (type(tbl[a]) == "table" and tbl[a][orderField]) or math.huge
-            local ob = (type(tbl[b]) == "table" and tbl[b][orderField]) or math.huge
-            if oa == ob then return tostring(a) < tostring(b) end
-            return oa < ob
-        end)
-    else
-        table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-    end
-    return keys
-end
-
-local function filterKeys(tbl, predicate)
-    local out = {}
-    for k, v in pairs(tbl) do
-        if predicate(k, v) then table.insert(out, k) end
-    end
-    table.sort(out)
-    return out
-end
+local sortedKeys = TableUtils.sortedKeys
+local filterKeys = TableUtils.filterKeys
 
 local function getEggList()       return sortedKeys(safeRequire("Eggs")) end
 local function getEnchantList(withNone)
