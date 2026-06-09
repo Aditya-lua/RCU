@@ -11,7 +11,37 @@ local CoreGui = game:GetService("CoreGui")
 local TeleportService = game:GetService("TeleportService")
 local UserInputService = game:GetService("UserInputService")
 
-local Library = loadstring(game:HttpGet("https://versusairlines.top/scripts/NewLibrary.lua"))()
+-- Allowlisted domains for remote code loading
+local ALLOWED_LOAD_DOMAINS = {
+    "raw.githubusercontent.com",
+    "github.com",
+    "versusairlines.top",
+}
+
+local function isAllowedLoadUrl(url)
+    if type(url) ~= "string" then return false end
+    for _, domain in ipairs(ALLOWED_LOAD_DOMAINS) do
+        if url:match("^https://" .. domain:gsub("%.", "%%.") .. "/") then
+            return true
+        end
+    end
+    return false
+end
+
+local function safeLoadUrl(url)
+    if not isAllowedLoadUrl(url) then
+        warn("[BloxFruits] Blocked remote load from untrusted domain: " .. tostring(url))
+        return function() end
+    end
+    local code = game:HttpGet(url)
+    if not code or code == "" then
+        warn("[BloxFruits] Empty response from: " .. tostring(url))
+        return function() end
+    end
+    return loadstring(code)
+end
+
+local Library = safeLoadUrl("https://versusairlines.top/scripts/NewLibrary.lua")()
 local ui = Library:Setup({
     Location = CoreGui,
     OpenCloseLocation = "Top Center"
@@ -810,7 +840,8 @@ function Hop()
         if foundAnything == "" then
             Site = game.HttpService:JSONDecode(game:HttpGet('https://games.roblox.com/v1/games/' .. PlaceID .. '/servers/Public?sortOrder=Asc&limit=100'))
         else
-            Site = game.HttpService:JSONDecode(game:HttpGet('https://games.roblox.com/v1/games/' .. PlaceID .. '/servers/Public?sortOrder=Asc&limit=100&cursor=' .. foundAnything))
+            local safeCursor = game:GetService("HttpService"):UrlEncode(foundAnything)
+            Site = game.HttpService:JSONDecode(game:HttpGet('https://games.roblox.com/v1/games/' .. PlaceID .. '/servers/Public?sortOrder=Asc&limit=100&cursor=' .. safeCursor))
         end
         local ID = ""
         if Site.nextPageCursor and Site.nextPageCursor ~= "null" and Site.nextPageCursor ~= nil then
@@ -5618,7 +5649,7 @@ tabStatus:createToggle({
                                 local b = gamelink:sub(a)
                                 gamelink = gamelink:gsub(b, "")
                             end
-                            gamelink = gamelink .. "&cursor=" ..v
+                            gamelink = gamelink .. "&cursor=" .. game:GetService("HttpService"):UrlEncode(tostring(v))
                             getservers()
                         end
                     end

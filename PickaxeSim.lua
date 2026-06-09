@@ -28,10 +28,42 @@ local Camera           = Workspace.Camera
 local client = Players.LocalPlayer
 
 --------------------------------------------------------------------------------
+-- Allowlisted domains for remote code loading
+--------------------------------------------------------------------------------
+local ALLOWED_LOAD_DOMAINS = {
+    "raw.githubusercontent.com",
+    "github.com",
+    "versusairlines.top",
+}
+
+local function isAllowedLoadUrl(url)
+    if type(url) ~= "string" then return false end
+    for _, domain in ipairs(ALLOWED_LOAD_DOMAINS) do
+        if url:match("^https://" .. domain:gsub("%.", "%%.") .. "/") then
+            return true
+        end
+    end
+    return false
+end
+
+local function safeLoadUrl(url)
+    if not isAllowedLoadUrl(url) then
+        warn("[PickaxeSim] Blocked remote load from untrusted domain: " .. tostring(url))
+        return function() end
+    end
+    local code = game:HttpGet(url)
+    if not code or code == "" then
+        warn("[PickaxeSim] Empty response from: " .. tostring(url))
+        return function() end
+    end
+    return loadstring(code)
+end
+
+--------------------------------------------------------------------------------
 -- Load UI
 --------------------------------------------------------------------------------
 print("[Pickaxe Sim] Loading Versus Lib…")
-local Library = loadstring(game:HttpGet("https://versusairlines.top/scripts/NewLibrary.lua"))()
+local Library = safeLoadUrl("https://versusairlines.top/scripts/NewLibrary.lua")()
 local Setup = Library:Setup({
     Location = CoreGui,
     OpenCloseLocation = "Top Center",
