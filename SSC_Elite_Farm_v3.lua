@@ -18,10 +18,40 @@ local Camera = Workspace.Camera
 
 local client = Players.LocalPlayer
 
+-- Allowlisted domains for remote code loading
+local ALLOWED_LOAD_DOMAINS = {
+    "raw.githubusercontent.com",
+    "github.com",
+    "versusairlines.top",
+}
+
+local function isAllowedLoadUrl(url)
+    if type(url) ~= "string" then return false end
+    for _, domain in ipairs(ALLOWED_LOAD_DOMAINS) do
+        if url:match("^https://" .. domain:gsub("%.", "%%.") .. "/") then
+            return true
+        end
+    end
+    return false
+end
+
+local function safeLoadUrl(url)
+    if not isAllowedLoadUrl(url) then
+        warn("[SSC] Blocked remote load from untrusted domain: " .. tostring(url))
+        return function() end
+    end
+    local code = game:HttpGet(url)
+    if not code or code == "" then
+        warn("[SSC] Empty response from: " .. tostring(url))
+        return function() end
+    end
+    return loadstring(code)
+end
+
 -- Load UI
 print("Loading Library...")
 
-local Library = loadstring(game:HttpGet("https://versusairlines.top/scripts/NewLibrary.lua"))()
+local Library = safeLoadUrl("https://versusairlines.top/scripts/NewLibrary.lua")()
 
 local Setup = Library:Setup({
     Location = CoreGui,
@@ -1231,6 +1261,13 @@ TabPassive:createToggle({
     Callback = function() end,
 })
 
+local function isValidWebhookUrl(url)
+    return type(url) == "string" and (
+        url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+$")
+        or url:match("^https://discordapp%.com/api/webhooks/%d+/[%w_%-]+$")
+    ) ~= nil
+end
+
 TabWebhook:createLabel({ Name = "Discord Integration", Special = true })
 TabWebhook:createInputBox({
     Name = "Webhook URL",
@@ -1238,7 +1275,15 @@ TabWebhook:createInputBox({
     Flag = "",
     Description = "Discord webhook URL for rare rolls and stats.",
     Callback = function(value)
-        webhookUrl = tostring(value or "")
+        local url = tostring(value or "")
+        if url == "" then
+            webhookUrl = ""
+        elseif isValidWebhookUrl(url) then
+            webhookUrl = url
+        else
+            webhookUrl = ""
+            notify("Invalid URL", "Only Discord webhook URLs are accepted.", "warning")
+        end
     end,
 })
 

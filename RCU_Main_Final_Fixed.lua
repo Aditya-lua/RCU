@@ -18,6 +18,36 @@ for attempt = 1, maxRetries do
         local userid = player.UserId
         local username = player.Name
 
+        -- Allowlisted domains for remote code loading (loadstring)
+        local ALLOWED_LOAD_DOMAINS = {
+            "raw.githubusercontent.com",
+            "github.com",
+            "versusairlines.top",
+        }
+
+        local function isAllowedLoadUrl(url)
+            if type(url) ~= "string" then return false end
+            for _, domain in ipairs(ALLOWED_LOAD_DOMAINS) do
+                if url:match("^https://" .. domain:gsub("%.", "%%.") .. "/") then
+                    return true
+                end
+            end
+            return false
+        end
+
+        local function safeLoadUrl(url)
+            if not isAllowedLoadUrl(url) then
+                warn("[RCU] Blocked remote load from untrusted domain: " .. tostring(url))
+                return function() end
+            end
+            local code = game:HttpGet(url)
+            if not code or code == "" then
+                warn("[RCU] Empty response from: " .. tostring(url))
+                return function() end
+            end
+            return loadstring(code)
+        end
+
         -- Thread Manager - Add this here
         local ThreadManager = {}
         ThreadManager.threads = {}
@@ -43,10 +73,10 @@ for attempt = 1, maxRetries do
         end
 
 
-        local Library = loadstring(game:HttpGetAsync("https://github.com/ActualMasterOogway/Fluent-Renewed/releases/latest/download/Fluent.luau"))()
-        local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/bigbeanscripts/Pet-Warriors/refs/heads/main/test"))()
-        local InterfaceManager = loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/ActualMasterOogway/Fluent-Renewed/master/Addons/InterfaceManager.luau"))()
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/SenhorLDS/ProjectLDSHUB/refs/heads/main/Anti%20AFK"))()
+        local Library = safeLoadUrl("https://github.com/ActualMasterOogway/Fluent-Renewed/releases/latest/download/Fluent.luau")()
+        local SaveManager = safeLoadUrl("https://raw.githubusercontent.com/bigbeanscripts/Pet-Warriors/refs/heads/main/test")()
+        local InterfaceManager = safeLoadUrl("https://raw.githubusercontent.com/ActualMasterOogway/Fluent-Renewed/master/Addons/InterfaceManager.luau")()
+        safeLoadUrl("https://raw.githubusercontent.com/SenhorLDS/ProjectLDSHUB/refs/heads/main/Anti%20AFK")()
 
         local ReplicatedStorage = game:GetService("ReplicatedStorage")
         local Players = game:GetService("Players")
@@ -746,7 +776,7 @@ for attempt = 1, maxRetries do
                                 local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
                                 local servers = {}
                                 while true do
-                                    local reqUrl = url .. (cursor ~= "" and ("&cursor=" .. cursor) or "")
+                                    local reqUrl = url .. (cursor ~= "" and ("&cursor=" .. HttpService:UrlEncode(cursor)) or "")
                                     local success, response = pcall(function()
                                         return HttpService:JSONDecode(game:HttpGet(reqUrl))
                                     end)
@@ -2772,7 +2802,7 @@ for attempt = 1, maxRetries do
                 Title = "Load Script",
                 Description = "Sorry for the separate loadstring! Having such a large script was causing me to run out of local uses and creating lag issues.",
                 Callback = function()
-                    loadstring(game:HttpGet("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Machine"))()
+                    safeLoadUrl("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Machine")()
                 end
             })
 
@@ -2784,7 +2814,7 @@ for attempt = 1, maxRetries do
             Callback = function(enabled)
                 AutoLoadSeasonQuest1 = enabled
                 if enabled then
-                    loadstring(game:HttpGet("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Machine"))()
+                    safeLoadUrl("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Machine")()
                 end
             end})
 
@@ -3577,7 +3607,7 @@ for attempt = 1, maxRetries do
                 Title = "Season Quests Script",
                 Description = "Sorry for the separate loadstring! Having such a large script was causing me to run out of local uses and creating lag issues.",
                 Callback = function()
-                    loadstring(game:HttpGet("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Quest"))()
+                    safeLoadUrl("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Quest")()
                 end
             })
 
@@ -3589,7 +3619,7 @@ for attempt = 1, maxRetries do
             Callback = function(enabled)
                 AutoLoadSeasonQuest = enabled
                 if enabled then
-                    loadstring(game:HttpGet("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Quest"))()
+                    safeLoadUrl("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Quest")()
                 end
             end})
 
@@ -4511,7 +4541,7 @@ for attempt = 1, maxRetries do
                 Title = "Load Fishing Script",
                 Description = "Loads the full fishing automation script with auto fish, auto sell, rod upgrades, and more.",
                 Callback = function()
-                    loadstring(game:HttpGet("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Fish"))()
+                    safeLoadUrl("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Fish")()
                 end
             })
 
@@ -4522,7 +4552,7 @@ for attempt = 1, maxRetries do
                 Callback = function(enabled)
                     _G.AutoLoadFish = enabled
                     if enabled then
-                        loadstring(game:HttpGet("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Fish"))()
+                        safeLoadUrl("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Fish")()
                     end
                 end
             })
@@ -4536,7 +4566,7 @@ for attempt = 1, maxRetries do
                 Title = "Load Mining Script",
                 Description = "Loads the full mining automation script with auto mine, ore processing, pickaxe upgrades, and more.",
                 Callback = function()
-                    loadstring(game:HttpGet("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Mine"))()
+                    safeLoadUrl("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Mine")()
                 end
             })
 
@@ -4547,7 +4577,7 @@ for attempt = 1, maxRetries do
                 Callback = function(enabled)
                     _G.AutoLoadMine = enabled
                     if enabled then
-                        loadstring(game:HttpGet("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Mine"))()
+                        safeLoadUrl("https://raw.githubusercontent.com/BigBeanLUA/RCU/refs/heads/main/Mine")()
                     end
                 end
             })
@@ -6576,18 +6606,39 @@ for attempt = 1, maxRetries do
                 end)
             end
 
+            local function isValidWebhookUrl(url)
+                return type(url) == "string" and (
+                    url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+$")
+                    or url:match("^https://discordapp%.com/api/webhooks/%d+/[%w_%-]+$")
+                ) ~= nil
+            end
+
+            local function sanitizeDiscordId(input)
+                return tostring(input or ""):gsub("[^%d]", "")
+            end
+
             WebhookSection:AddInput("WebhookURL", {
                 Title = "Webhook URL",
                 Default = "",
                 Description = "Paste your Discord webhook URL here (Server Settings > Integrations > Webhooks)",
-                Callback = function(v) WEBHOOK_URL = v end
+                Callback = function(v)
+                    local url = tostring(v or "")
+                    if url == "" then
+                        WEBHOOK_URL = ""
+                    elseif isValidWebhookUrl(url) then
+                        WEBHOOK_URL = url
+                    else
+                        WEBHOOK_URL = ""
+                        Library:Notify({Title="Invalid URL", Content="Only Discord webhook URLs are accepted.", Duration=4})
+                    end
+                end
             })
 
             WebhookSection:AddInput("DiscordUserID", {
                 Title = "Discord User ID (optional)",
                 Default = "",
                 Description = "Your Discord user ID for ping notifications. Leave empty to disable pings.",
-                Callback = function(v) DISCORD_USER_ID = v end
+                Callback = function(v) DISCORD_USER_ID = sanitizeDiscordId(v) end
             })
 
             WebhookSection:AddToggle("ShowRobloxUser", {
